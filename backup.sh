@@ -161,8 +161,8 @@ add_task() {
 
     # 目标路径校验：强制绝对路径 (目录可不存在，Worker 脚本会自动创建)
     while true; do
-        read -p "💾 3. 请输入存放备份的【目标文件夹】绝对路径 (默认: /volume2/Backup/Docker_Backups): " BACKUP_DEST
-        BACKUP_DEST=${BACKUP_DEST:-"/volume2/Backup/Docker_Backups"}
+        read -p "💾 3. 请输入存放备份的【目标文件夹】绝对路径 (默认: /home/Backups): " BACKUP_DEST
+        BACKUP_DEST=${BACKUP_DEST:-"/home/Backups"}
         
         if [[ ! "$BACKUP_DEST" =~ ^/ ]]; then
             echo -e "${RED}❌ 目标路径必须是绝对路径 (以 / 开头)！${NC}"
