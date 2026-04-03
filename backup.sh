@@ -7,8 +7,8 @@ BLUE='\033[0;34m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-# 定义存储所有 Worker 脚本和日志的根目录
-BASE_DIR="/root/auto_backups"
+# 业界标准：将自定义系统级服务/脚本存放在 /opt 目录下
+BASE_DIR="/opt/auto_backups"
 WORKER_DIR="$BASE_DIR/scripts"
 LOG_DIR="$BASE_DIR/logs"
 
@@ -22,7 +22,7 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # ==========================================
-# 0. 依赖环境智能检测与安装 (仅在启动时检测一次)
+# 0. 依赖环境智能检测与安装
 # ==========================================
 check_dependencies() {
     local missing=0
@@ -66,10 +66,12 @@ list_tasks() {
         local task_name=$(basename "$script" .sh)
         # 从脚本和 crontab 中提取元数据以供显示
         local source_dir=$(grep '^SOURCE_DIR=' "$script" | head -n 1 | cut -d'"' -f2)
+        local backup_dest=$(grep '^BACKUP_DEST=' "$script" | head -n 1 | cut -d'"' -f2)
         local cron_expr=$(crontab -l 2>/dev/null | grep "$script" | awk -F '/bin/bash' '{print $1}' | xargs)
         
         echo -e "  [${YELLOW}${count}${NC}] 🏷️  名称: ${GREEN}${task_name}${NC}"
         echo -e "      📁 源路径: $source_dir"
+        echo -e "      💾 备份路径: $backup_dest"
         echo -e "      ⏰ 定时规则: ${cron_expr:-"未在crontab中找到"}"
         echo -e "      -----------------------------------------"
     done
@@ -139,11 +141,35 @@ add_task() {
         return
     fi
 
-    read -p "📁 2. 请输入需要备份的【源目录或文件】绝对路径 (默认: /volume1/Docker): " SOURCE_DIR
-    SOURCE_DIR=${SOURCE_DIR:-"/volume1/Docker"}
+    # 源路径校验：强制要求绝对路径，且目标必须存在
+    while true; do
+        read -p "📁 2. 请输入需要备份的【源目录或文件】绝对路径 (默认: /volume1/Docker): " SOURCE_DIR
+        SOURCE_DIR=${SOURCE_DIR:-"/volume1/Docker"}
 
-    read -p "💾 3. 请输入存放备份的【目标文件夹】绝对路径 (默认: /volume2/Backup/Docker_Backups): " BACKUP_DEST
-    BACKUP_DEST=${BACKUP_DEST:-"/volume2/Backup/Docker_Backups"}
+        if [[ ! "$SOURCE_DIR" =~ ^/ ]]; then
+            echo -e "${RED}❌ 必须输入绝对路径 (以 / 开头)！请勿使用 '~' 缩写 (因为定时任务以 root 运行，~ 指向 /root)。${NC}"
+            continue
+        fi
+
+        if [ ! -e "$SOURCE_DIR" ]; then
+            echo -e "${RED}❌ 找不到源路径 '$SOURCE_DIR'！请检查拼写或确认文件/目录是否真实存在。${NC}"
+            continue
+        fi
+        
+        break
+    done
+
+    # 目标路径校验：强制绝对路径 (目录可不存在，Worker 脚本会自动创建)
+    while true; do
+        read -p "💾 3. 请输入存放备份的【目标文件夹】绝对路径 (默认: /volume2/Backup/Docker_Backups): " BACKUP_DEST
+        BACKUP_DEST=${BACKUP_DEST:-"/volume2/Backup/Docker_Backups"}
+        
+        if [[ ! "$BACKUP_DEST" =~ ^/ ]]; then
+            echo -e "${RED}❌ 目标路径必须是绝对路径 (以 / 开头)！${NC}"
+            continue
+        fi
+        break
+    done
 
     read -p "⏳ 4. 备份文件保留天数 (默认: 7): " RETAIN_DAYS
     RETAIN_DAYS=${RETAIN_DAYS:-7}
@@ -159,10 +185,9 @@ add_task() {
         read -p "⏰ 6. 请设置备份频率 (格式 1h-24h 代表每天指定小时，或 1d-28d 代表每月指定日期，默认: 6h): " FREQ_INPUT
         FREQ_INPUT=${FREQ_INPUT:-"6h"}
 
-        # 处理每天的备份 (例如 6h, 24h)
         if [[ "$FREQ_INPUT" =~ ^([0-9]{1,2})[hH]$ ]]; then
             HOUR="${BASH_REMATCH[1]}"
-            HOUR=$((10#$HOUR)) # 去除前导零，防止被当成八进制
+            HOUR=$((10#$HOUR))
             if [ "$HOUR" -ge 1 ] && [ "$HOUR" -le 24 ]; then
                 if [ "$HOUR" -eq 24 ]; then HOUR=0; fi
                 CRON_EXPR="0 $HOUR * * *"
@@ -171,7 +196,6 @@ add_task() {
             fi
         fi
 
-        # 处理每月的备份 (例如 15d)
         if [[ "$FREQ_INPUT" =~ ^([0-9]{1,2})[dD]$ ]]; then
             DAY="${BASH_REMATCH[1]}"
             DAY=$((10#$DAY))
