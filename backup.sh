@@ -127,42 +127,39 @@ add_task() {
     echo -e "${GREEN}              ✨ 创建新的备份任务 ✨             ${NC}"
     echo -e "${BLUE}=================================================${NC}"
 
-    read -p "🏷️  1. 请输入【任务名称】(仅限英文字母、数字和下划线，例如 docker_data): " TASK_NAME
-    if [[ ! "$TASK_NAME" =~ ^[a-zA-Z0-9_]+$ ]]; then
-        echo -e "${RED}❌ 任务名称无效！只能包含英文字母、数字和下划线，且不能为空。${NC}"
-        return
-    fi
-
-    WORKER_SCRIPT="$WORKER_DIR/${TASK_NAME}.sh"
-    LOG_FILE="$LOG_DIR/${TASK_NAME}.log"
-
-    if [ -f "$WORKER_SCRIPT" ]; then
-        echo -e "${RED}❌ 任务名称 '${TASK_NAME}' 已存在！请使用其他名称或先删除旧任务。${NC}"
-        return
-    fi
-
-    # 源路径校验：强制要求绝对路径，且目标必须存在
+    # 源路径校验：强制要求绝对路径，并自动提取任务名
     while true; do
-        read -p "📁 2. 请输入需要备份的【源目录或文件】绝对路径 (默认: /volume1/Docker): " SOURCE_DIR
-        SOURCE_DIR=${SOURCE_DIR:-"/volume1/Docker"}
+        read -p "📁 1. 请输入需要备份的【源目录或文件】绝对路径 (默认: /opt/succuba-girls-collection): " SOURCE_DIR
+        SOURCE_DIR=${SOURCE_DIR:-"/opt/succuba-girls-collection"}
 
         if [[ ! "$SOURCE_DIR" =~ ^/ ]]; then
-            echo -e "${RED}❌ 必须输入绝对路径 (以 / 开头)！请勿使用 '~' 缩写 (因为定时任务以 root 运行，~ 指向 /root)。${NC}"
+            echo -e "${RED}❌ 必须输入绝对路径 (以 / 开头)！请勿使用 '~' 缩写。${NC}"
             continue
         fi
 
         if [ ! -e "$SOURCE_DIR" ]; then
-            echo -e "${RED}❌ 找不到源路径 '$SOURCE_DIR'！请检查拼写或确认文件/目录是否真实存在。${NC}"
+            echo -e "${RED}❌ 找不到源路径 '$SOURCE_DIR'！请检查拼写。${NC}"
             continue
         fi
         
+        # 去除末尾斜杠，保证 basename 提取准确
+        SOURCE_DIR=${SOURCE_DIR%/}
         break
     done
 
-    # 目标路径校验：强制绝对路径 (目录可不存在，Worker 脚本会自动创建)
+    # 自动提取文件夹名作为任务名，允许中划线等字符
+    TASK_NAME=$(basename "$SOURCE_DIR")
+    WORKER_SCRIPT="$WORKER_DIR/${TASK_NAME}.sh"
+    LOG_FILE="$LOG_DIR/${TASK_NAME}.log"
+
+    if [ -f "$WORKER_SCRIPT" ]; then
+        echo -e "${YELLOW}⚠️ 注意：任务 '${TASK_NAME}' 已存在，继续操作将覆盖原定时任务。${NC}"
+    fi
+
+    # 目标路径校验
     while true; do
-        read -p "💾 3. 请输入存放备份的【目标文件夹】绝对路径 (默认: /home/Backups): " BACKUP_DEST
-        BACKUP_DEST=${BACKUP_DEST:-"/home/Backups"}
+        read -p "💾 2. 请输入存放备份的【目标文件夹】绝对路径 (默认: /opt/backups): " BACKUP_DEST
+        BACKUP_DEST=${BACKUP_DEST:-"/opt/backups"}
         
         if [[ ! "$BACKUP_DEST" =~ ^/ ]]; then
             echo -e "${RED}❌ 目标路径必须是绝对路径 (以 / 开头)！${NC}"
@@ -171,10 +168,10 @@ add_task() {
         break
     done
 
-    read -p "⏳ 4. 备份文件保留天数 (默认: 7): " RETAIN_DAYS
+    read -p "⏳ 3. 备份文件保留天数 (默认: 7): " RETAIN_DAYS
     RETAIN_DAYS=${RETAIN_DAYS:-7}
 
-    read -p "🐳 5. 是否需要在备份时自动【停止并重新启动】所有 Docker 容器? (备份数据库必选) [Y/n]: " MANAGE_DOCKER
+    read -p "🐳 4. 是否需要在备份时自动【停止并重新启动】所有 Docker 容器? (备份数据库必选) [Y/n]: " MANAGE_DOCKER
     if [[ "$MANAGE_DOCKER" =~ ^[Nn]$ ]]; then
         MANAGE_DOCKER="no"
     else
@@ -182,13 +179,13 @@ add_task() {
     fi
 
     while true; do
-        read -p "⏰ 6. 请设置备份频率 (格式 1h-24h 代表每天指定小时，或 1d-28d 代表每月指定日期，默认: 6h): " FREQ_INPUT
-        FREQ_INPUT=${FREQ_INPUT:-"6h"}
+        read -p "⏰ 5. 请设置备份频率 (格式 1h-24h 或 1d-28d，默认: 4h): " FREQ_INPUT
+        FREQ_INPUT=${FREQ_INPUT:-"4h"}
 
         if [[ "$FREQ_INPUT" =~ ^([0-9]{1,2})[hH]$ ]]; then
             HOUR="${BASH_REMATCH[1]}"
             HOUR=$((10#$HOUR))
-            if [ "$HOUR" -ge 1 ] && [ "$HOUR" -le 24 ]; then
+            if [ "$HOUR" -ge 0 ] && [ "$HOUR" -le 24 ]; then
                 if [ "$HOUR" -eq 24 ]; then HOUR=0; fi
                 CRON_EXPR="0 $HOUR * * *"
                 echo -e "${GREEN}✅ 已自动转换为: 每天 $HOUR:00 执行 ($CRON_EXPR)${NC}"
@@ -200,18 +197,18 @@ add_task() {
             DAY="${BASH_REMATCH[1]}"
             DAY=$((10#$DAY))
             if [ "$DAY" -ge 1 ] && [ "$DAY" -le 28 ]; then
-                CRON_EXPR="0 6 $DAY * *"
-                echo -e "${GREEN}✅ 已自动转换为: 每月 $DAY 号 6:00 执行 ($CRON_EXPR)${NC}"
+                CRON_EXPR="0 4 $DAY * *"
+                echo -e "${GREEN}✅ 已自动转换为: 每月 $DAY 号 4:00 执行 ($CRON_EXPR)${NC}"
                 break
             fi
         fi
 
-        echo -e "${RED}❌ 输入格式无效！请输入例如 6h (每天早上6点) 或 15d (每月15号)。${NC}"
+        echo -e "${RED}❌ 输入格式无效！请输入例如 4h (每天凌晨4点) 或 15d (每月15号)。${NC}"
     done
 
     echo -e "\n${YELLOW}⚙️ 正在生成后台工作脚本并注册定时任务...${NC}"
 
-    # 动态写入 Worker 脚本
+    # 动态写入 Worker 脚本 (加入第五步：开放权限)
     cat << EOF > "$WORKER_SCRIPT"
 #!/bin/bash
 # ==========================================
@@ -231,34 +228,34 @@ echo "========================================================"
 
 # 第一步：停止 Docker (如果启用)
 if [ "\$MANAGE_DOCKER" = "yes" ]; then
-    echo "[\$(date +"%Y-%m-%d %H:%M:%S")] [1/4] 正在停止所有 Docker 容器..."
-    RUNNING_CONTAINERS=\$(docker ps -q)
-    if [ ! -z "\$RUNNING_CONTAINERS" ]; then
-        docker stop \$RUNNING_CONTAINERS
-    fi
+    echo "[\$(date +"%Y-%m-%d %H:%M:%S")] [1/5] 正在停止所有 Docker 容器以锁定数据..."
+    cd "\$SOURCE_DIR" && docker compose stop > /dev/null 2>&1 || echo "⚠️ 没有可停止的 compose 容器"
 else
-    echo "[\$(date +"%Y-%m-%d %H:%M:%S")] [1/4] Docker 管理已禁用，跳过停止容器..."
+    echo "[\$(date +"%Y-%m-%d %H:%M:%S")] [1/5] Docker 管理已禁用，跳过停止容器..."
 fi
 
 # 第二步：压缩数据
-echo "[\$(date +"%Y-%m-%d %H:%M:%S")] [2/4] 正在压缩并备份数据..."
+echo "[\$(date +"%Y-%m-%d %H:%M:%S")] [2/5] 正在压缩并备份数据..."
 mkdir -p "\$BACKUP_DEST"
-tar -czf "\$BACKUP_FILE" "\$SOURCE_DIR"
+cd \$(dirname "\$SOURCE_DIR")
+tar -czf "\$BACKUP_FILE" \$(basename "\$SOURCE_DIR") > /dev/null 2>&1
 
 # 第三步：恢复 Docker (如果启用)
 if [ "\$MANAGE_DOCKER" = "yes" ]; then
-    echo "[\$(date +"%Y-%m-%d %H:%M:%S")] [3/4] 备份完成！正在重新拉起所有容器..."
-    ALL_CONTAINERS=\$(docker ps -aq)
-    if [ ! -z "\$ALL_CONTAINERS" ]; then
-        docker start \$ALL_CONTAINERS
-    fi
+    echo "[\$(date +"%Y-%m-%d %H:%M:%S")] [3/5] 备份完成！正在重新拉起所有容器..."
+    cd "\$SOURCE_DIR" && docker compose start > /dev/null 2>&1 || echo "⚠️ 没有可启动的 compose 容器"
 else
-    echo "[\$(date +"%Y-%m-%d %H:%M:%S")] [3/4] Docker 管理已禁用，跳过拉起容器..."
+    echo "[\$(date +"%Y-%m-%d %H:%M:%S")] [3/5] Docker 管理已禁用，跳过拉起容器..."
 fi
 
 # 第四步：清理旧备份
-echo "[\$(date +"%Y-%m-%d %H:%M:%S")] [4/4] 正在清理 \$RETAIN_DAYS 天前的旧备份..."
+echo "[\$(date +"%Y-%m-%d %H:%M:%S")] [4/5] 正在清理 \$RETAIN_DAYS 天前的旧备份..."
 find "\$BACKUP_DEST" -name "${TASK_NAME}_backup_*.tar.gz" -type f -mtime +\$RETAIN_DAYS -exec rm -f {} \;
+
+# 第五步：放开目标文件夹权限，允许普通用户提取
+echo "[\$(date +"%Y-%m-%d %H:%M:%S")] [5/5] 正在开放备份目录读取权限..."
+chmod -R 755 "\$BACKUP_DEST"
+chmod 644 "\$BACKUP_FILE"
 
 echo "[\$(date +"%Y-%m-%d %H:%M:%S")] ✅ 任务 [$TASK_NAME] 执行完毕"
 echo "========================================================"
@@ -269,11 +266,11 @@ EOF
     chmod +x "$WORKER_SCRIPT"
 
     # 写入 Crontab
-    (crontab -l 2>/dev/null; echo "$CRON_EXPR /bin/bash $WORKER_SCRIPT >> $LOG_FILE 2>&1") | crontab -
+    (crontab -l 2>/dev/null | grep -v "$WORKER_SCRIPT"; echo "$CRON_EXPR /bin/bash $WORKER_SCRIPT >> $LOG_FILE 2>&1") | crontab -
 
     echo -e "${GREEN}🎉 任务 [$TASK_NAME] 创建成功并已加入定时调度！${NC}"
     echo -e "👉 脚本路径: $WORKER_SCRIPT"
-    echo -e "👉 日志路径: $LOG_FILE"
+    echo -e "👉 存放路径: $BACKUP_DEST"
 }
 
 # ==========================================
