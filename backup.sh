@@ -36,6 +36,12 @@ check_dependencies() {
         if command -v apt-get &> /dev/null; then apt-get install -y cron; systemctl enable cron --now; else echo -e "${RED}❌ 请手动安装 cron${NC}"; missing=1; fi
     fi
 
+    # 🟢 新增：VPS 端也必须有 rsync 才能响应远端的拉取请求
+    if ! command -v rsync &> /dev/null; then
+        echo -e "${YELLOW}⚠️ 缺少数据同步工具 'rsync'，正在尝试安装...${NC}"
+        if command -v apt-get &> /dev/null; then apt-get install -y rsync; else echo -e "${RED}❌ 请手动安装 rsync${NC}"; missing=1; fi
+    fi
+
     if [ $missing -eq 1 ]; then
         exit 1
     fi
