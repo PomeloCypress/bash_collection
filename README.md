@@ -11,11 +11,11 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/PomeloCypress/bash_
 ## Debian
 
 ```bash
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/PomeloCypress/bash_collection/refs/heads/main/init-debian.sh)
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/PomeloCypress/bash_collection/refs/heads/main/init-debian.sh)"
 ```
 
 ## Ubuntu
 
 ```bash
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/PomeloCypress/bash_collection/refs/heads/main/init-ubuntu.sh)
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/PomeloCypress/bash_collection/refs/heads/main/init-ubuntu.sh)"
 ```
