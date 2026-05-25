@@ -7,7 +7,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 echo -e "${BLUE}=================================================${NC}"
-echo -e "${GREEN}  🚀 欢迎使用 Debian 全能交互式初始化脚本 (完全优化版) 🚀  ${NC}"
+echo -e "${GREEN}  🚀 欢迎使用 Debian 全能交互式初始化脚本 (终极完全体) 🚀  ${NC}"
 echo -e "${BLUE}=================================================${NC}"
 
 # 确保脚本以 root 权限运行
@@ -18,7 +18,7 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 
-# 强行捕获父进程传递的环境变量代理，锁死系统级变量，防止因环境重载丢失
+# 强行捕获并锁死父进程传递的顶级网络代理，防止因环境重载丢失
 if [ -n "$http_proxy" ]; then
     export HTTP_PROXY="$http_proxy"
     export HTTPS_PROXY="$https_proxy"
@@ -193,16 +193,15 @@ else
     fi
 fi
 
-# 7. Docker 引擎 (极致修复版：采用落盘运行，完美防范任何子 shell 管道中代理丢失造成的下载崩溃)
+# 7. Docker 引擎 (本地落盘运行保底版，彻底解决任何子 Shell 网络沙箱穿透问题)
 echo -e "\n${YELLOW}🐳 [7/12] 容器环境${NC}"
 if command -v docker &> /dev/null; then
     echo -e "${GREEN}✅ Docker 官方环境已安装，跳过。${NC}"
 else
     read -p "❓ 是否安装 Docker 官方环境 (生产环境必备)? [Y/n]: " install_docker
     if [[ ! "$install_docker" =~ ^[Nn]$ ]]; then
-        echo -e "${YELLOW}📡 正在拉取 Docker 官方安装程序到本地，防止由于管道连接断开导致安装崩溃...${NC}"
+        echo -e "${YELLOW}📡 正在从官方通道安全下载 Docker 安装程序...${NC}"
         
-        # 本地落盘，显式继承当前会话中已经验证成功的顶级网络代理
         curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
         if [ -f /tmp/get-docker.sh ]; then
             HTTP_PROXY="$HTTP_PROXY" HTTPS_PROXY="$HTTPS_PROXY" ALL_PROXY="$ALL_PROXY" \
@@ -281,7 +280,7 @@ else
     fi
 fi
 
-# 10. Python 环境 (终极进化：完美支持 Rust 版 uv 一键毫秒级配置，并锁定 3.12 黄金纯净内核)
+# 10. Python 环境 (✨ 完美闭环：全自动实现环境变量无缝追加与自适应重载)
 echo -e "\n${YELLOW}🐍 [10/12] 后端开发环境 (uv / Miniconda)${NC}"
 if [ -f "$USER_HOME/.local/bin/uv" ] || [ -d "$USER_HOME/miniconda3" ]; then
     echo -e "${GREEN}✅ 物理层 Python 环境管理工具已经存在，跳过。${NC}"
@@ -293,18 +292,26 @@ else
     if [ "$python_env_choice" = "1" ]; then
         echo -e "${YELLOW}📦 正在为日常用户 $ACTUAL_USER 快速注入 Rust 核心 uv...${NC}"
         
-        # 显式将当前终端已验证过的代理变量打包传递给 sudo -u 用户空间，防止由于权限变化导致的握手卡死
         sudo -u "$ACTUAL_USER" -H HTTP_PROXY="$HTTP_PROXY" HTTPS_PROXY="$HTTPS_PROXY" ALL_PROXY="$ALL_PROXY" \
         http_proxy="$http_proxy" https_proxy="$https_proxy" all_proxy="$all_proxy" \
         bash -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'
         
-        # 顺手为物理隔离层直接预装、并拉取一个最平稳的官方 Python 3.12 纯净内核供 Agent 使用
+        # 🛠️ 核心修复：将 uv 路径实时注入当前执行脚本的根环境中
+        export PATH="$USER_HOME/.local/bin:$PATH"
+        
+        # 🛠️ 核心修复：让 uv 自动把路径全自动追加进目标账户的 Shell 配置文件中
+        sudo -u "$ACTUAL_USER" -H "$USER_HOME/.local/bin/uv" python update-shell >/dev/null 2>&1
+        
         echo -e "${YELLOW}📦 正在通过 uv 极速获取官方 Python 3.12 运行时...${NC}"
         sudo -u "$ACTUAL_USER" -H HTTP_PROXY="$HTTP_PROXY" HTTPS_PROXY="$HTTPS_PROXY" ALL_PROXY="$ALL_PROXY" \
         http_proxy="$http_proxy" https_proxy="$https_proxy" all_proxy="$all_proxy" \
-        bash -c "$USER_HOME/.local/bin/uv python install 3.12"
+        PATH="$PATH" bash -c "uv python install 3.12"
         
-        echo -e "${GREEN}✅ uv 部署成功，且沙箱 Python 3.12 内核已安全就位！${NC}"
+        # 🛠️ 核心修复：一键为目标日常账户创建全局环境快捷软链接，确保原地秒开
+        ln -sf "$USER_HOME/.local/bin/uv" /usr/local/bin/uv
+        
+        echo -e "${GREEN}✅ uv 部署成功，且全局环境变量已锁死，沙箱 Python 3.12 内核就位！${NC}"
+        NEED_SHELL_RELOAD=true
         
     elif [ "$python_env_choice" = "2" ]; then
         ARCH=$(uname -m)
@@ -326,12 +333,6 @@ else
                 \"$USER_HOME/miniconda3/bin/conda\" init zsh
                 rm -f /tmp/miniconda.sh
             "
-            if [ -f "$USER_HOME/.mytheme.omp.json" ]; then
-                sudo -u "$ACTUAL_USER" -H bash -c "
-                    cd \"$USER_HOME\"
-                    jq '(.. | select(.type? == \"python\") | .properties.fetch_virtual_env?) = true | (.. | select(.type? == \"python\") | .template?) = \" \ue235 {{ if .Error }}{{ .Error }}{{ else }}{{ if .Venv }}[{{ .Venv }}] {{ end }}{{ .Full }}{{ end }} \"' \"$USER_HOME/.mytheme.omp.json\" > /tmp/tmp_theme.json && mv /tmp/tmp_theme.json \"$USER_HOME/.mytheme.omp.json\"
-                "
-            fi
             echo -e "${GREEN}✅ Miniconda 安装完毕。${NC}"
         fi
     else
@@ -364,27 +365,16 @@ alias unproxy=\"unset http_proxy && unset https_proxy && unset all_proxy && echo
     fi
 fi
 
-# 12. 系统清理 (已深度补强：工业级极致瘦身、垃圾清除与 eMMC 寿命保护)
+# 12. 系统清理 (工业级极致瘦身与 eMMC 寿命保护)
 echo -e "\n${YELLOW}🧹 [12/12] 正在深度清理系统垃圾、旧日志与缓存...${NC}"
-
-# 12.1 彻底清除已经被卸载软件的残留配置文件
 apt-get autoremove -y --purge >/dev/null 2>&1
 apt-get autoclean -y >/dev/null 2>&1
 apt-get clean -y >/dev/null 2>&1
-
-# 12.2 物理级强制收缩 systemd 历史日志堆积 (只保留 50M)
 journalctl --vacuum-size=50M >/dev/null 2>&1
-
-# 12.3 深度扫除 /var/log 中陈旧的被轮转压缩文件 (.gz / .1 旧备份)
 find /var/log -type f -regex '.*\.gz$' -delete >/dev/null 2>&1
 find /var/log -type f -regex '.*\.[0-9]$' -delete >/dev/null 2>&1
-
-# 12.4 抹平 /tmp 临时目录中的残留构建垃圾
 rm -rf /tmp/* /var/tmp/* >/dev/null 2>&1
-
-# 12.5 清理可能残留的构建缓存
 rm -rf "$USER_HOME/.cache" /root/.cache >/dev/null 2>&1
-
 echo -e "${GREEN}✅ 系统极致清理完成！已为您最大化释放磁盘空间，全力呵护闪存颗粒寿命。${NC}"
 
 echo -e "\n${BLUE}=================================================${NC}"
@@ -395,3 +385,13 @@ else
     echo -e "${YELLOW}👉 请断开当前的 SSH 连接并重新登录，即可享受全新的开发体验！${NC}"
 fi
 echo -e "${BLUE}=================================================${NC}"
+
+# 🛠️ 终极点睛之笔：如果安装了 uv，在脚本彻底退出前，自动原位热替换刷新当前用户的 Shell 环境
+if [ "$NEED_SHELL_RELOAD" = true ]; then
+    CURRENT_SHELL=$(basename "$SHELL")
+    if [ "$CURRENT_SHELL" = "zsh" ] || [ "$CURRENT_SHELL" = "bash" ]; then
+        echo -e "${BLUE}🔄 检测到全新的环境变量注入，正在为您原地秒级热重载 ${GREEN}$CURRENT_SHELL${BLUE} 环境...${NC}"
+        unset NEED_SHELL_RELOAD
+        exec sudo -u "$ACTUAL_USER" -H "$SHELL"
+    fi
+fi
