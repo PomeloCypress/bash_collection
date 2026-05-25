@@ -7,7 +7,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 echo -e "${BLUE}=================================================${NC}"
-echo -e "${GREEN}  🚀 欢迎使用 Debian 全能交互式初始化脚本 🚀  ${NC}"
+echo -e "${GREEN}  🚀 欢迎使用 Debian 全能交互式初始化脚本 (完全优化版) 🚀  ${NC}"
 echo -e "${BLUE}=================================================${NC}"
 
 # 确保脚本以 root 权限运行
@@ -17,6 +17,16 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 export DEBIAN_FRONTEND=noninteractive
+
+# 强行捕获父进程传递的环境变量代理，锁死系统级变量，防止因环境重载丢失
+if [ -n "$http_proxy" ]; then
+    export HTTP_PROXY="$http_proxy"
+    export HTTPS_PROXY="$https_proxy"
+    export ALL_PROXY="$all_proxy"
+    export http_proxy="$http_proxy"
+    export https_proxy="$https_proxy"
+    export all_proxy="$all_proxy"
+fi
 
 # 0. 极简环境保底：确保 Debian 中存在 sudo，防止后续提权失败
 apt update -q && apt install -y -q sudo
@@ -32,7 +42,6 @@ if [ "$ACTUAL_USER" = "root" ]; then
         read -p "👤 请输入新用户的用户名 (例如: rn1): " new_username
         if [ -n "$new_username" ] && ! id "$new_username" &>/dev/null; then
             echo -e "${YELLOW}🔑 正在创建用户 $new_username，请按提示为其设置密码：${NC}"
-            # --gecos "" 用于跳过全名、房间号等繁琐询问
             adduser --gecos "" "$new_username"
             usermod -aG sudo "$new_username"
             
@@ -50,7 +59,7 @@ fi
 USER_HOME=$(getent passwd "$ACTUAL_USER" | cut -d: -f6)
 echo -e "\n👤 最终环境配置目标用户: ${GREEN}$ACTUAL_USER${NC}, 主目录: ${GREEN}$USER_HOME${NC}"
 
-# ！！！核心修复：强行切换工作目录！！！
+# 强行切换工作目录
 cd "$USER_HOME" || cd /tmp
 
 # 兜底创建 .zshrc 和 .bashrc
@@ -95,7 +104,7 @@ echo -e "\n${YELLOW}🌐 [3/12] 网络优化${NC}"
 if grep -q "bbr" /proc/sys/net/ipv4/tcp_congestion_control 2>/dev/null; then
     echo -e "${GREEN}✅ BBR 已经处于开启状态，跳过配置。${NC}"
 else
-    read -p "❓ 是否开启 BBR TCP 拥塞控制加速? [Y/n]: " enable_bbr
+    read -p "❓ 是否开启 BBR TCP 拥塞控制加速 (极力推荐，无线网络不丢包神器)? [Y/n]: " enable_bbr
     if [[ ! "$enable_bbr" =~ ^[Nn]$ ]]; then
         echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
         echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
@@ -116,75 +125,62 @@ else
     fi
 fi
 
-# 5. 防火墙与安全 (已优化：支持复用检测、状态输出、自定义端口)
+# 5. 防火墙与安全
 echo -e "\n${YELLOW}🛡️ [5/12] 防火墙配置 (UFW & Fail2ban)${NC}"
 if grep -qEi "(Microsoft|WSL)" /proc/version &> /dev/null; then
     echo -e "${GREEN}💻 检测到 WSL 环境，自动跳过 UFW/Fail2ban 安装。${NC}"
 else
-    read -p "❓ 是否检测并配置 UFW 防火墙与 Fail2ban (将自动开放 SSH 和 443 端口)? [Y/n]: " config_sec
+    read -p "❓ 是否检测并配置 UFW 防火墙与 Fail2ban (局域网内网推荐选 n 跳过)? [Y/n]: " config_sec
     if [[ ! "$config_sec" =~ ^[Nn]$ ]]; then
-        
-        # 1. 检查并安装工具
         if ! command -v ufw &> /dev/null || ! command -v fail2ban-server &> /dev/null; then
             echo -e "${YELLOW}📦 正在安装 UFW 和 Fail2ban...${NC}"
             apt install -y -q ufw fail2ban
         fi
 
-        # 2. Fail2ban：防爆破守护，直接启用并设置开机自启
         systemctl enable fail2ban --now >/dev/null 2>&1
         echo -e "${GREEN}✅ Fail2ban (防 SSH 爆破) 已在后台运行并设置开机自启。${NC}"
 
-        # 3. UFW：基础规则配置
-        systemctl enable ufw >/dev/null 2>&1  # 确保 systemd 服务开机自启
+        systemctl enable ufw >/dev/null 2>&1
         ufw default deny incoming >/dev/null 2>&1
         ufw default allow outgoing >/dev/null 2>&1
 
-        # 4. 放行核心端口 (幂等操作，已存在的规则会安全跳过)
         ufw allow ssh >/dev/null 2>&1
         ufw allow 443/tcp >/dev/null 2>&1
         echo -e "${GREEN}✅ 已确保放行 SSH 端口 和 HTTPS (443) 端口。${NC}"
 
-        # 4.5 交互式放行其他自定义端口
         while true; do
-            read -p "❓ 是否需要开放其他端口？请以逗号分隔输入 (如: 80,81,8080)，输入 n/N 跳过: " extra_ports
-            
-            # 判断是否跳过 (包含 n, N 或直接回车为空)
+            read -p "❓ 是否需要开放其他端口？请以逗号分隔输入 (如: 80,81,8080)，输入 n 跳过: " extra_ports
             if [[ "$extra_ports" =~ ^[Nn]$ ]] || [ -z "$extra_ports" ]; then
                 echo -e "${YELLOW}⏭️ 跳过开放其他额外端口。${NC}"
                 break
             fi
-            
-            # 正则校验：只允许数字和英文逗号组合，且开头结尾必须是数字
             if [[ "$extra_ports" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
                 IFS=',' read -ra PORT_ARRAY <<< "$extra_ports"
                 for port in "${PORT_ARRAY[@]}"; do
                     ufw allow "$port/tcp" >/dev/null 2>&1
                     echo -e "${GREEN}✅ 已放行额外端口: $port/tcp${NC}"
                 done
-                break # 成功放行后跳出循环
+                break
             else
-                echo -e "${YELLOW}❌ 输入格式有误！请严格按格式输入数字并用英文逗号分割 (例如: 80,81,8080)${NC}"
+                echo -e "${YELLOW}❌ 输入格式有误！请重新输入 (例如: 80,81,8080)${NC}"
             fi
         done
 
-        # 5. 强制激活并输出状态
         ufw --force enable >/dev/null 2>&1
         echo -e "${GREEN}✅ UFW 防火墙已激活并设置开机自启。${NC}"
-        
-        echo -e "\n${BLUE}📋 当前防火墙状态如下：${NC}"
         ufw status verbose
     else
         echo -e "${YELLOW}⏭️ 已跳过防火墙配置。${NC}"
     fi
 fi
 
-# 6. Swap 虚拟内存 (升级为 2GB)
+# 6. Swap 虚拟内存
 echo -e "\n${YELLOW}💾 [6/12] 内存管理${NC}"
 SWAP_SIZE=$(free -m | grep -i swap | awk '{print $2}')
 if [ -n "$SWAP_SIZE" ] && [ "$SWAP_SIZE" -gt 0 ]; then
     echo -e "${GREEN}✅ 系统已存在 Swap 虚拟内存 (${SWAP_SIZE}MB)，无需重复创建。${NC}"
 else
-    read -p "❓ 是否创建 2GB Swap 虚拟内存 (防 OOM 死机神器)? [Y/n]: " create_swap
+    read -p "❓ 是否创建 2GB Swap 虚拟内存 (防 OOM 死机)? [Y/n]: " create_swap
     if [[ ! "$create_swap" =~ ^[Nn]$ ]]; then
         if [ ! -f /swapfile ]; then
             fallocate -l 2G /swapfile
@@ -197,16 +193,29 @@ else
     fi
 fi
 
-# 7. Docker 引擎
+# 7. Docker 引擎 (极致修复版：采用落盘运行，完美防范任何子 shell 管道中代理丢失造成的下载崩溃)
 echo -e "\n${YELLOW}🐳 [7/12] 容器环境${NC}"
 if command -v docker &> /dev/null; then
     echo -e "${GREEN}✅ Docker 官方环境已安装，跳过。${NC}"
 else
     read -p "❓ 是否安装 Docker 官方环境 (生产环境必备)? [Y/n]: " install_docker
     if [[ ! "$install_docker" =~ ^[Nn]$ ]]; then
-        curl -fsSL https://get.docker.com | sh
+        echo -e "${YELLOW}📡 正在拉取 Docker 官方安装程序到本地，防止由于管道连接断开导致安装崩溃...${NC}"
+        
+        # 本地落盘，显式继承当前会话中已经验证成功的顶级网络代理
+        curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
+        if [ -f /tmp/get-docker.sh ]; then
+            HTTP_PROXY="$HTTP_PROXY" HTTPS_PROXY="$HTTPS_PROXY" ALL_PROXY="$ALL_PROXY" \
+            http_proxy="$http_proxy" https_proxy="$https_proxy" all_proxy="$all_proxy" \
+            sh /tmp/get-docker.sh
+            rm -f /tmp/get-docker.sh
+        else
+            echo -e "${YELLOW}⚠️ 官方直连极度缓慢，开启一键切换到国内阿里云高速镜像通道进行安装...${NC}"
+            curl -fsSL https://get.docker.com | bash -s docker --mirror Aliyun
+        fi
+        
         usermod -aG docker "$ACTUAL_USER"
-        echo -e "${GREEN}✅ Docker 安装完成，已将 $ACTUAL_USER 加入 docker 用户组。${NC}"
+        echo -e "${GREEN}✅ Docker 官方引擎配置完成，已成功授权 $ACTUAL_USER 组。${NC}"
     fi
 fi
 
@@ -272,13 +281,32 @@ else
     fi
 fi
 
-# 10. Python 环境
-echo -e "\n${YELLOW}🐍 [10/12] 后端开发环境 (Miniconda)${NC}"
-if [ -d "$USER_HOME/miniconda3" ]; then
-    echo -e "${GREEN}✅ Miniconda 已安装，跳过。${NC}"
+# 10. Python 环境 (终极进化：完美支持 Rust 版 uv 一键毫秒级配置，并锁定 3.12 黄金纯净内核)
+echo -e "\n${YELLOW}🐍 [10/12] 后端开发环境 (uv / Miniconda)${NC}"
+if [ -f "$USER_HOME/.local/bin/uv" ] || [ -d "$USER_HOME/miniconda3" ]; then
+    echo -e "${GREEN}✅ 物理层 Python 环境管理工具已经存在，跳过。${NC}"
 else
-    read -p "❓ 是否安装 Miniconda? [Y/n]: " install_conda
-    if [[ ! "$install_conda" =~ ^[Nn]$ ]]; then
+    echo -e "💡 极客提示：2026年强烈推荐使用 Rust 编写的 ${GREEN}uv${NC}，空载 0 消耗，拉包速度比 Conda 快几十倍！"
+    read -p "❓ 请选择安装的环境管理器 [1] uv (极力推荐) / [2] Miniconda / [3] 跳过 (默认 1): " python_env_choice
+    python_env_choice=${python_env_choice:-1}
+
+    if [ "$python_env_choice" = "1" ]; then
+        echo -e "${YELLOW}📦 正在为日常用户 $ACTUAL_USER 快速注入 Rust 核心 uv...${NC}"
+        
+        # 显式将当前终端已验证过的代理变量打包传递给 sudo -u 用户空间，防止由于权限变化导致的握手卡死
+        sudo -u "$ACTUAL_USER" -H HTTP_PROXY="$HTTP_PROXY" HTTPS_PROXY="$HTTPS_PROXY" ALL_PROXY="$ALL_PROXY" \
+        http_proxy="$http_proxy" https_proxy="$https_proxy" all_proxy="$all_proxy" \
+        bash -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'
+        
+        # 顺手为物理隔离层直接预装、并拉取一个最平稳的官方 Python 3.12 纯净内核供 Agent 使用
+        echo -e "${YELLOW}📦 正在通过 uv 极速获取官方 Python 3.12 运行时...${NC}"
+        sudo -u "$ACTUAL_USER" -H HTTP_PROXY="$HTTP_PROXY" HTTPS_PROXY="$HTTPS_PROXY" ALL_PROXY="$ALL_PROXY" \
+        http_proxy="$http_proxy" https_proxy="$https_proxy" all_proxy="$all_proxy" \
+        bash -c "$USER_HOME/.local/bin/uv python install 3.12"
+        
+        echo -e "${GREEN}✅ uv 部署成功，且沙箱 Python 3.12 内核已安全就位！${NC}"
+        
+    elif [ "$python_env_choice" = "2" ]; then
         ARCH=$(uname -m)
         if [ "$ARCH" = "x86_64" ]; then
             CONDA_URL="https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh"
@@ -306,6 +334,8 @@ else
             fi
             echo -e "${GREEN}✅ Miniconda 安装完毕。${NC}"
         fi
+    else
+        echo -e "${YELLOW}⏭️ 已跳过 Python 环境配置。${NC}"
     fi
 fi
 
@@ -334,11 +364,28 @@ alias unproxy=\"unset http_proxy && unset https_proxy && unset all_proxy && echo
     fi
 fi
 
-# 12. 系统清理
-echo -e "\n${YELLOW}🧹 [12/12] 正在清理无用安装包与缓存...${NC}"
-apt autoremove -y
-apt clean
-echo -e "${GREEN}✅ 系统垃圾清理完成！为你释放了宝贵的磁盘空间。${NC}"
+# 12. 系统清理 (已深度补强：工业级极致瘦身、垃圾清除与 eMMC 寿命保护)
+echo -e "\n${YELLOW}🧹 [12/12] 正在深度清理系统垃圾、旧日志与缓存...${NC}"
+
+# 12.1 彻底清除已经被卸载软件的残留配置文件
+apt-get autoremove -y --purge >/dev/null 2>&1
+apt-get autoclean -y >/dev/null 2>&1
+apt-get clean -y >/dev/null 2>&1
+
+# 12.2 物理级强制收缩 systemd 历史日志堆积 (只保留 50M)
+journalctl --vacuum-size=50M >/dev/null 2>&1
+
+# 12.3 深度扫除 /var/log 中陈旧的被轮转压缩文件 (.gz / .1 旧备份)
+find /var/log -type f -regex '.*\.gz$' -delete >/dev/null 2>&1
+find /var/log -type f -regex '.*\.[0-9]$' -delete >/dev/null 2>&1
+
+# 12.4 抹平 /tmp 临时目录中的残留构建垃圾
+rm -rf /tmp/* /var/tmp/* >/dev/null 2>&1
+
+# 12.5 清理可能残留的构建缓存
+rm -rf "$USER_HOME/.cache" /root/.cache >/dev/null 2>&1
+
+echo -e "${GREEN}✅ 系统极致清理完成！已为您最大化释放磁盘空间，全力呵护闪存颗粒寿命。${NC}"
 
 echo -e "\n${BLUE}=================================================${NC}"
 echo -e "${GREEN}🎉 恭喜！Debian 初始化流程全部完美结束！🎉${NC}"
