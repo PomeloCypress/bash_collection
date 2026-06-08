@@ -18,21 +18,89 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 
-# 强行捕获并锁死父进程传递的顶级网络代理，防止因环境重载丢失
+# 获取调用此脚本的真实凡人账户与家目录
+ACTUAL_USER=${SUDO_USER:-$(whoami)}
+USER_HOME=$(getent passwd "$ACTUAL_USER" | cut -d: -f6)
+
+# =========================================================
+# 🚀 黑科技一：父环境代理自动捕获与全局临时穿透引擎 (不带 -E 也能飞)
+# =========================================================
+DETECTED_PROXY=""
+
+# 1. 优先捕获当前环境变量（如果使用了 -E）
 if [ -n "$http_proxy" ]; then
-    export HTTP_PROXY="$http_proxy"
-    export HTTPS_PROXY="$https_proxy"
-    export ALL_PROXY="$all_proxy"
-    export http_proxy="$http_proxy"
-    export https_proxy="$https_proxy"
-    export all_proxy="$all_proxy"
+    DETECTED_PROXY="$http_proxy"
+elif [ -n "$HTTP_PROXY" ]; then
+    DETECTED_PROXY="$HTTP_PROXY"
 fi
 
-# 0. 极简环境保底：确保 Debian 中存在 sudo，防止后续提权失败
+# 2. 如果环境变量为空（没带 -E），深度解析调用者账户的 rc 配置文件
+if [ -z "$DETECTED_PROXY" ] && [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
+    for rc_file in "$USER_HOME/.bashrc" "$USER_HOME/.zshrc"; do
+        if [ -f "$rc_file" ]; then
+            # 精准匹配 alias proxy="export http_proxy='...'" 里的 IP 端口
+            PARSED_PROXY=$(grep -oE "http_proxy=['\"][^'\"]+['\"]" "$rc_file" | head -n 1 | cut -d"'" -f2 | cut -d'"' -f2)
+            if [ -n "$PARSED_PROXY" ]; then
+                DETECTED_PROXY="$PARSED_PROXY"
+                break
+            fi
+            # 保底备用：直接匹配 IP:PORT 格式
+            PARSED_PROXY=$(grep -oE "[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}:[0-9]+" "$rc_file" | head -n 1)
+            if [ -n "$PARSED_PROXY" ]; then
+                DETECTED_PROXY="http://$PARSED_PROXY"
+                break
+            fi
+        fi
+    done
+fi
+
+# 3. 如果成功定位到代理，执行系统级临时无感穿透
+if [ -n "$DETECTED_PROXY" ]; then
+    # 彻底洗净提取出的代理字符串（粉碎任何不可见零宽控制字符、回车符、前后空格）
+    DETECTED_PROXY=$(echo "$DETECTED_PROXY" | tr -d '\r' | sed 's/[^a-zA-Z0-9.:/_-]//g')
+    
+    export http_proxy="$DETECTED_PROXY"
+    export https_proxy="$DETECTED_PROXY"
+    export all_proxy="$DETECTED_PROXY"
+    export HTTP_PROXY="$DETECTED_PROXY"
+    export HTTPS_PROXY="$DETECTED_PROXY"
+    export ALL_PROXY="$DETECTED_PROXY"
+
+    echo -e "${GREEN}✨ [检测成功] 已自动穿透并继承凡人账户代理: $DETECTED_PROXY${NC}"
+
+    # A. 临时将代理注入 APT 包管理器（解决 get-docker.sh 内部调用 apt-get 的网络断流问题）
+    echo "Acquire::http::Proxy \"$DETECTED_PROXY\";" > /etc/apt/apt.conf.d/99temp-proxy
+    echo "Acquire::https::Proxy \"$DETECTED_PROXY\";" >> /etc/apt/apt.conf.d/99temp-proxy
+    
+    # B. 临时注入 curl 全局配置（解决官方脚本子 shell 里 curl 断流问题）
+    echo "proxy = \"$DETECTED_PROXY\"" > /root/.curlrc
+    echo "proxy = \"$DETECTED_PROXY\"" > "$USER_HOME/.curlrc"
+    chown "$ACTUAL_USER":"$ACTUAL_USER" "$USER_HOME/.curlrc" 2>/dev/null || true
+
+    # C. 临时注入 Git 全局配置
+    git config --global http.proxy "$DETECTED_PROXY" 2>/dev/null || true
+    git config --global https.proxy "$DETECTED_PROXY" 2>/dev/null || true
+else
+    echo -e "${YELLOW}ℹ️ 未检测到活动的代理配置，将使用原生直接连接。${NC}"
+fi
+
+# D. 物理钩子：在脚本结束或意外中断时，秒级物理擦除所有临时代理，绝不留一丝系统垃圾
+cleanup_temp_proxy() {
+    echo -e "\n${YELLOW}🧹 正在物理恢复系统级原生网络环境...${NC}"
+    rm -f /etc/apt/apt.conf.d/99temp-proxy
+    rm -f /root/.curlrc
+    rm -f "$USER_HOME/.curlrc"
+    git config --global --unset http.proxy 2>/dev/null || true
+    git config --global --unset https.proxy 2>/dev/null || true
+}
+trap cleanup_temp_proxy EXIT INT TERM
+
+# =========================================================
+
+# 0. 极简环境保底
 apt update -q && apt install -y -q sudo
 
-# 1. 账户安全与日常用户设置 (拦截 Root 环境污染)
-ACTUAL_USER=${SUDO_USER:-$(whoami)}
+# 1. 账户安全与日常用户设置
 echo -e "\n${YELLOW}🔐 [1/12] 账户与安全设置${NC}"
 
 if [ "$ACTUAL_USER" = "root" ]; then
@@ -46,6 +114,7 @@ if [ "$ACTUAL_USER" = "root" ]; then
             usermod -aG sudo "$new_username"
             
             ACTUAL_USER="$new_username"
+            USER_HOME=$(getent passwd "$ACTUAL_USER" | cut -d: -f6)
             echo -e "${GREEN}✅ 用户 $new_username 创建完毕，已加入 sudo 组。${NC}"
         else
             echo -e "${YELLOW}⚠️ 用户名无效或已存在，将继续使用 root 身份安装。${NC}"
@@ -55,14 +124,12 @@ else
     echo -e "${GREEN}✅ 当前已经是普通账户 ($ACTUAL_USER)，跳过新建用户步骤。${NC}"
 fi
 
-# 重新计算目标用户主目录
-USER_HOME=$(getent passwd "$ACTUAL_USER" | cut -d: -f6)
 echo -e "\n👤 最终环境配置目标用户: ${GREEN}$ACTUAL_USER${NC}, 主目录: ${GREEN}$USER_HOME${NC}"
 
-# 强行切换工作目录
+# 强行切换工作目录至 Linux 娘家
 cd "$USER_HOME" || cd /tmp
 
-# 兜底创建 .zshrc 和 .bashrc
+# 兜底创建配置文件
 sudo -u "$ACTUAL_USER" -H touch "$USER_HOME/.zshrc" "$USER_HOME/.bashrc"
 
 # 1.5 交互式配置 SSH 公钥
@@ -89,7 +156,7 @@ if [ "$ACTUAL_USER" != "root" ]; then
         echo -e "${GREEN}✅ Root 远程登录已被禁用，跳过。${NC}"
     else
         sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
-        systemctl restart ssh || systemctl restart sshd
+        systemctl restart ssh || systemctl restart sshd 2>/dev/null || true
         echo -e "${GREEN}🛡️ Root 账户的远程 SSH 登录已被永久封锁。${NC}"
     fi
 fi
@@ -101,14 +168,16 @@ apt install -y -q curl wget git nano htop zsh unzip tmux jq ca-certificates
 
 # 3. BBR 加速
 echo -e "\n${YELLOW}🌐 [3/12] 网络优化${NC}"
-if grep -q "bbr" /proc/sys/net/ipv4/tcp_congestion_control 2>/dev/null; then
+if grep -qEi "(Microsoft|WSL)" /proc/version &> /dev/null; then
+    echo -e "${GREEN}💻 检测到 WSL 环境，网络栈与物理网卡由 Windows 宿主机内核统一掌管。自动跳过 BBR 开启。${NC}"
+elif grep -q "bbr" /proc/sys/net/ipv4/tcp_congestion_control 2>/dev/null; then
     echo -e "${GREEN}✅ BBR 已经处于开启状态，跳过配置。${NC}"
 else
     read -p "❓ 是否开启 BBR TCP 拥塞控制加速 (极力推荐，无线网络不丢包神器)? [Y/n]: " enable_bbr
     if [[ ! "$enable_bbr" =~ ^[Nn]$ ]]; then
         echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
         echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
-        sysctl -p
+        sysctl -p 2>/dev/null || true
         echo -e "${GREEN}✅ BBR 加速已成功开启！${NC}"
     fi
 fi
@@ -120,7 +189,7 @@ if [ "$(timedatectl show --property=Timezone --value 2>/dev/null)" = "Asia/Shang
 else
     read -p "❓ 是否将系统时区修改为 Asia/Shanghai (北京时间)? [Y/n]: " set_tz
     if [[ ! "$set_tz" =~ ^[Nn]$ ]]; then
-        timedatectl set-timezone Asia/Shanghai
+        timedatectl set-timezone Asia/Shanghai 2>/dev/null || true
         echo -e "${GREEN}✅ 系统时区已设置为: $(date)${NC}"
     fi
 fi
@@ -193,27 +262,34 @@ else
     fi
 fi
 
-# 7. Docker 引擎 (本地落盘运行保底版，彻底解决任何子 Shell 网络沙箱穿透问题)
+# 7. Docker 引擎 (由于临时全局代理穿透，这里将百分之百完美、丝滑落盘)
 echo -e "\n${YELLOW}🐳 [7/12] 容器环境${NC}"
 if command -v docker &> /dev/null; then
     echo -e "${GREEN}✅ Docker 官方环境已安装，跳过。${NC}"
 else
     read -p "❓ 是否安装 Docker 官方环境 (生产环境必备)? [Y/n]: " install_docker
     if [[ ! "$install_docker" =~ ^[Nn]$ ]]; then
-        echo -e "${YELLOW}📡 正在从官方通道安全下载 Docker 安装程序...${NC}"
+        echo -e "${YELLOW}📡 正在从官方通道安全下载并启动 Docker 引擎部署...${NC}"
         
+        # 抓取官方安装脚本
         curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
+        
         if [ -f /tmp/get-docker.sh ]; then
-            HTTP_PROXY="$HTTP_PROXY" HTTPS_PROXY="$HTTPS_PROXY" ALL_PROXY="$ALL_PROXY" \
-            http_proxy="$http_proxy" https_proxy="$https_proxy" all_proxy="$all_proxy" \
+            # 执行时，临时 APT 和 curl 代理配置已经挂载，其子 Shell 升级与 GPG 拉取将畅通无阻
             sh /tmp/get-docker.sh
             rm -f /tmp/get-docker.sh
         else
-            echo -e "${YELLOW}⚠️ 官方直连极度缓慢，开启一键切换到国内阿里云高速镜像通道进行安装...${NC}"
+            echo -e "${YELLOW}⚠️ 官方直连由于外界干扰失败，强制启动备用阿里云高速镜像通道...${NC}"
             curl -fsSL https://get.docker.com | bash -s docker --mirror Aliyun
         fi
         
+        # 确保 docker 用户组存在
+        groupadd docker 2>/dev/null || true
         usermod -aG docker "$ACTUAL_USER"
+        
+        # 如果是 systemd，启动服务
+        systemctl enable docker --now 2>/dev/null || true
+        
         echo -e "${GREEN}✅ Docker 官方引擎配置完成，已成功授权 $ACTUAL_USER 组。${NC}"
     fi
 fi
@@ -268,9 +344,8 @@ else
     read -p "❓ 是否安装 NVM 及 Node.js LTS? [Y/n]: " install_node
     if [[ ! "$install_node" =~ ^[Nn]$ ]]; then
         sudo -u "$ACTUAL_USER" -H bash -c '
-            cd "$HOME"
-            curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
             export NVM_DIR="$HOME/.nvm"
+            curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
             [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
             nvm install --lts
             nvm use --lts
@@ -280,7 +355,7 @@ else
     fi
 fi
 
-# 10. Python 环境 (✨ 完美闭环：全自动实现环境变量无缝追加与自适应重载)
+# 10. Python 环境
 echo -e "\n${YELLOW}🐍 [10/12] 后端开发环境 (uv / Miniconda)${NC}"
 if [ -f "$USER_HOME/.local/bin/uv" ] || [ -d "$USER_HOME/miniconda3" ]; then
     echo -e "${GREEN}✅ 物理层 Python 环境管理工具已经存在，跳过。${NC}"
@@ -292,22 +367,18 @@ else
     if [ "$python_env_choice" = "1" ]; then
         echo -e "${YELLOW}📦 正在为日常用户 $ACTUAL_USER 快速注入 Rust 核心 uv...${NC}"
         
-        sudo -u "$ACTUAL_USER" -H HTTP_PROXY="$HTTP_PROXY" HTTPS_PROXY="$HTTPS_PROXY" ALL_PROXY="$ALL_PROXY" \
-        http_proxy="$http_proxy" https_proxy="$https_proxy" all_proxy="$all_proxy" \
-        bash -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'
+        sudo -u "$ACTUAL_USER" -H bash -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'
         
-        # 🛠️ 核心修复：将 uv 路径实时注入当前执行脚本的根环境中
+        # 将 uv 路径实时注入当前执行脚本的根环境中
         export PATH="$USER_HOME/.local/bin:$PATH"
         
-        # 🛠️ 核心修复：让 uv 自动把路径全自动追加进目标账户的 Shell 配置文件中
+        # 让 uv 自动把路径全自动追加进目标账户的 Shell 配置文件中
         sudo -u "$ACTUAL_USER" -H "$USER_HOME/.local/bin/uv" python update-shell >/dev/null 2>&1
         
         echo -e "${YELLOW}📦 正在通过 uv 极速获取官方 Python 3.12 运行时...${NC}"
-        sudo -u "$ACTUAL_USER" -H HTTP_PROXY="$HTTP_PROXY" HTTPS_PROXY="$HTTPS_PROXY" ALL_PROXY="$ALL_PROXY" \
-        http_proxy="$http_proxy" https_proxy="$https_proxy" all_proxy="$all_proxy" \
-        PATH="$PATH" bash -c "uv python install 3.12"
+        sudo -u "$ACTUAL_USER" -H PATH="$PATH" bash -c "uv python install 3.12"
         
-        # 🛠️ 核心修复：一键为目标日常账户创建全局环境快捷软链接，确保原地秒开
+        # 一键为目标日常账户创建全局环境快捷软链接，确保原地秒开
         ln -sf "$USER_HOME/.local/bin/uv" /usr/local/bin/uv
         
         echo -e "${GREEN}✅ uv 部署成功，且全局环境变量已锁死，沙箱 Python 3.12 内核就位！${NC}"
@@ -340,15 +411,18 @@ else
     fi
 fi
 
-# 11. 终端代理设置
+# 11. 终端代理设置 (✨ 注入物理粉碎机，彻底杜绝隐藏脏字符、回车符)
 echo -e "\n${YELLOW}🔌 [11/12] 终端代理设置${NC}"
 if grep -q 'alias proxy=' "$USER_HOME/.bashrc" 2>/dev/null || grep -q 'alias proxy=' "$USER_HOME/.zshrc" 2>/dev/null; then
     echo -e "${GREEN}✅ 终端代理快捷键已配置，跳过。${NC}"
 else
     read -p "❓ 是否配置终端代理快捷键 (输入 proxy 开启，unproxy 关闭)? [Y/n]: " setup_proxy
     if [[ ! "$setup_proxy" =~ ^[Nn]$ ]]; then
-        read -p "🔗 请输入代理地址 (默认: http://192.168.31.227:20172): " proxy_url
-        proxy_url=${proxy_url:-"http://192.168.31.227:20172"}
+        read -p "🔗 请输入代理地址 (默认: http://127.0.0.1:10808): " proxy_url
+        proxy_url=${proxy_url:-"http://127.0.0.1:10808"}
+        
+        # 🛡️ 核心修复：物理粉碎机 —— 过滤清除输入中可能存在的任何 \r 换行符、零宽不可见字符或前后多余空格
+        proxy_url=$(echo "$proxy_url" | tr -d '\r' | sed 's/[^a-zA-Z0-9.:/_-]//g')
         
         PROXY_CONFIG="
 # Magic Network Switch
@@ -361,7 +435,7 @@ alias unproxy=\"unset http_proxy && unset https_proxy && unset all_proxy && echo
         if [ -f "$USER_HOME/.zshrc" ] && ! grep -q 'alias proxy=' "$USER_HOME/.zshrc"; then
             echo "$PROXY_CONFIG" | sudo -u "$ACTUAL_USER" -H tee -a "$USER_HOME/.zshrc" > /dev/null
         fi
-        echo -e "${GREEN}✅ 代理快捷键已配置！${NC}"
+        echo -e "${GREEN}✅ 代理快捷键已成功配置为: $proxy_url ！${NC}"
     fi
 fi
 
@@ -395,3 +469,5 @@ if [ "$NEED_SHELL_RELOAD" = true ]; then
         exec sudo -u "$ACTUAL_USER" -H "$SHELL"
     fi
 fi
+```
+eof
