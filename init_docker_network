@@ -110,5 +110,4 @@ if [ -f "/etc/docker/daemon.json" ]; then
     docker info 2>/dev/null | grep -A 5 "Registry Mirrors" --color=always
 fi
 echo -e "${BLUE}===============================================================${NC}\n"
-```
 eof
