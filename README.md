@@ -22,5 +22,5 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/PomeloCypress/bash_
 # docker网络设置脚本
 
 ```bash
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/PomeloCypress/bash_collection/refs/heads/main/init_docker_network)"
+curl -fsSL https://raw.githubusercontent.com/PomeloCypress/bash_collection/refs/heads/main/init_docker_network | sudo bash
 ```
