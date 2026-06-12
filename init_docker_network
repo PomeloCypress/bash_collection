@@ -5,7 +5,7 @@
 # ==================================================================
 # 适用环境: Debian 12/13, Ubuntu Server
 # 默认代理: http://192.168.31.227:20172
-# 极客特性: 完美支持 curl | bash 管道交互，杜绝输入流被吞
+# 极客特性: 完美支持 curl | bash 管道交互，多重容错，干净无残留
 # ==================================================================
 
 # 终端输出美化
@@ -24,7 +24,7 @@ echo -e "${BLUE}===============================================================$
 # ── 1. 权限与执行环境预检 ──
 if [ "$EUID" -ne 0 ]; then
     echo -e "${RED}❌ 致命错误：请使用 sudo 或以 root 权限运行此脚本！${NC}"
-    echo -e "${YELLOW}👉 推荐调用方式: sudo bash -c \"\$(curl -fsSL ...)\"${NC}"
+    echo -e "${YELLOW}👉 推荐调用方式: sudo bash <(curl -fsSL https://raw.githubusercontent.com/...) ${NC}"
     exit 1
 fi
 
@@ -110,4 +110,5 @@ if [ -f "/etc/docker/daemon.json" ]; then
     docker info 2>/dev/null | grep -A 5 "Registry Mirrors" --color=always
 fi
 echo -e "${BLUE}===============================================================${NC}\n"
+```
 eof
