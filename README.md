@@ -19,3 +19,8 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/PomeloCypress/bash_
 ```bash
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/PomeloCypress/bash_collection/refs/heads/main/init-ubuntu.sh)"
 ```
+# docker网络设置脚本
+
+```bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/PomeloCypress/bash_collection/refs/heads/main/init-ubuntu.sh)"
+```
