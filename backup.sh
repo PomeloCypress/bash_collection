@@ -180,7 +180,7 @@ add_task() {
         echo -e "${YELLOW}⚠️ 注意：任务 '${TASK_NAME}' 已存在，继续操作将覆盖原配置。${NC}"
     fi
 
-    # 3. 动态配置排除路径
+    # 3. 动态配置排除路径（🌟 修复核心：采用单重极简且 100% 精准的打包排除）
     echo -e "🚫 3. 是否需要排除源目录下的特定子文件夹或文件？"
     echo -e "   ${YELLOW}提示: 输入相对源目录的路径（如: dify 或 data/neo4j/logs），多个用英文逗号隔开。${NC}"
     read -p "   👉 请输入排除项列表 (直接回车代表不排除): " EXCLUDE_INPUT
@@ -194,8 +194,8 @@ add_task() {
         IFS=',' read -ra ADDR <<< "$EXCLUDE_INPUT"
         TASK_DIR_NAME=$(basename "$SOURCE_DIR")
         for item in "${ADDR[@]}"; do
-            # 物理双锚定：前缀匹配与纯名泛匹配，确保 100% 被 tar 排除
-            EXCLUDE_OPTS="$EXCLUDE_OPTS --exclude=\"${TASK_DIR_NAME}/${item}\" --exclude=\"${item}\""
+            # 极简高精度锚定：仅排除 `cadence/dify`，彻底杜绝重复
+            EXCLUDE_OPTS="$EXCLUDE_OPTS --exclude=\"${TASK_DIR_NAME}/${item}\""
         done
         echo -e "${GREEN}✅ 已为您配置排除过滤参数：${EXCLUDE_INPUT}${NC}"
     fi
@@ -223,11 +223,12 @@ add_task() {
         MANAGE_DOCKER="yes"
     fi
 
-    # 7. 定时运行规则
+    # 7. 定时运行规则（🌟 升级核心：新增 w/W 每周调度规则）
     while true; do
-        read -p "⏰ 7. 请设置备份频率 (格式 1h-24h 或 1d-28d，例如每天凌晨4点为 4h，默认: 3h 即每日凌晨3点): " FREQ_INPUT
+        read -p "⏰ 7. 请设置备份频率 (格式 1h-24h, 1w-7w, 1d-28d。每天凌晨4点为 4h，每周一凌晨4点为 1w，默认: 3h 即每日凌晨3点): " FREQ_INPUT
         FREQ_INPUT=${FREQ_INPUT:-"3h"}
 
+        # 选项一：每日小时制频率
         if [[ "$FREQ_INPUT" =~ ^([0-9]{1,2})[hH]$ ]]; then
             HOUR="${BASH_REMATCH[1]}"
             HOUR=$((10#$HOUR))
@@ -239,6 +240,24 @@ add_task() {
             fi
         fi
 
+        # 选项二：每周特定天频率（🌟 新增）
+        if [[ "$FREQ_INPUT" =~ ^([1-7])[wW]$ ]]; then
+            WEEKDAY="${BASH_REMATCH[1]}"
+            CRON_EXPR="0 4 * * $WEEKDAY"
+            case $WEEKDAY in
+                1) WEEKDAY_NAME="周一" ;;
+                2) WEEKDAY_NAME="周二" ;;
+                3) WEEKDAY_NAME="周三" ;;
+                4) WEEKDAY_NAME="周四" ;;
+                5) WEEKDAY_NAME="周五" ;;
+                6) WEEKDAY_NAME="周六" ;;
+                7) WEEKDAY_NAME="周日" ;;
+            esac
+            echo -e "${GREEN}✅ 已自动转换为: 每周 $WEEKDAY_NAME 4:00 执行 ($CRON_EXPR)${NC}"
+            break
+        fi
+
+        # 选项三：每月特定天频率
         if [[ "$FREQ_INPUT" =~ ^([0-9]{1,2})[dD]$ ]]; then
             DAY="${BASH_REMATCH[1]}"
             DAY=$((10#$DAY))
@@ -249,12 +268,12 @@ add_task() {
             fi
         fi
 
-        echo -e "${RED}❌ 输入格式无效！请输入例如 4h (每天凌晨4点) 或 15d (每月15号)。${NC}"
+        echo -e "${RED}❌ 输入格式无效！请输入例如 4h (每天凌晨4点), 1w (每周一凌晨4点) 或 15d (每月15号)。${NC}"
     done
 
     echo -e "\n${YELLOW}⚙️  正在生成后台工作脚本并注册定时任务...${NC}"
 
-    # 动态写入 Worker 脚本（精细化热注入）
+    # 动态写入 Worker 脚本
     cat << EOF > "$WORKER_SCRIPT"
 #!/bin/bash
 # ==========================================
@@ -281,12 +300,12 @@ else
     echo "[\$(date +"%Y-%m-%d %H:%M:%S")] [1/5] Docker 管理已禁用，跳过停止容器..."
 fi
 
-# 第二步：压缩数据 (🌟 精准排除功能核心)
+# 第二步：压缩数据 (🌟 精准单重排除)
 echo "[\$(date +"%Y-%m-%d %H:%M:%S")] [2/5] 正在压缩并备份数据..."
 mkdir -p "\$BACKUP_DEST"
 cd \$(dirname "$SOURCE_DIR")
 
-# 利用 eval 执行复杂的、带排除项的打包命令，完美保护带有空格或特殊字符的路径
+# 利用 eval 执行排除项打包命令
 TAR_CMD="tar -czf \"\$BACKUP_FILE\" \$EXCLUDE_OPTS \"\$(basename \"\$SOURCE_DIR\")\""
 eval "\$TAR_CMD" > /dev/null 2>&1
 
@@ -302,7 +321,7 @@ fi
 echo "[\$(date +"%Y-%m-%d %H:%M:%S")] [4/5] 正在清理 \$RETAIN_DAYS 天前的旧备份..."
 find "\$BACKUP_DEST" -name "${TASK_NAME}_backup_*.tar.gz" -type f -mtime +\$RETAIN_DAYS -exec rm -f {} \;
 
-# 第五步：放开目标文件夹权限，允许普通用户（如 NAS 同步组件）安全提取
+# 第五步：放开目标文件夹权限，允许普通用户安全提取
 echo "[\$(date +"%Y-%m-%d %H:%M:%S")] [5/5] 正在开放备份目录读取权限..."
 chmod -R 755 "\$BACKUP_DEST"
 chmod 644 "\$BACKUP_FILE"
