@@ -1,5 +1,11 @@
 #!/bin/bash
 
+# ==================================================================
+# 🪐 一键自愈交互式多任务备份总控系统 (2026 精准排除与自定义前缀版)
+# ==================================================================
+# 功能: 支持自定义前缀、动态排除子目录、Docker 联动自愈、FIFO 物理安全锁死
+# ==================================================================
+
 # 颜色定义
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -17,7 +23,7 @@ mkdir -p "$WORKER_DIR" "$LOG_DIR"
 
 # 确保脚本以 root 权限运行
 if [ "$EUID" -ne 0 ]; then
-  echo -e "${RED}❌ 请使用 root 权限运行此脚本 (例如: sudo bash setup_backup.sh)${NC}"
+  echo -e "${RED}❌ 请使用 root 权限运行此脚本 (例如: sudo bash backup.sh)${NC}"
   exit 1
 fi
 
@@ -36,7 +42,6 @@ check_dependencies() {
         if command -v apt-get &> /dev/null; then apt-get install -y cron; systemctl enable cron --now; else echo -e "${RED}❌ 请手动安装 cron${NC}"; missing=1; fi
     fi
 
-    # 🟢 新增：VPS 端也必须有 rsync 才能响应远端的拉取请求
     if ! command -v rsync &> /dev/null; then
         echo -e "${YELLOW}⚠️ 缺少数据同步工具 'rsync'，正在尝试安装...${NC}"
         if command -v apt-get &> /dev/null; then apt-get install -y rsync; else echo -e "${RED}❌ 请手动安装 rsync${NC}"; missing=1; fi
@@ -56,7 +61,6 @@ list_tasks() {
     echo -e "${BLUE}=================================================${NC}"
     
     local count=0
-    # 将文件读入数组
     shopt -s nullglob
     local files=("$WORKER_DIR"/*.sh)
     shopt -u nullglob
@@ -73,11 +77,20 @@ list_tasks() {
         # 从脚本和 crontab 中提取元数据以供显示
         local source_dir=$(grep '^SOURCE_DIR=' "$script" | head -n 1 | cut -d'"' -f2)
         local backup_dest=$(grep '^BACKUP_DEST=' "$script" | head -n 1 | cut -d'"' -f2)
+        local exclude_raw=$(grep '^EXCLUDE_OPTS=' "$script" | head -n 1 | cut -d"'" -f2)
         local cron_expr=$(crontab -l 2>/dev/null | grep "$script" | awk -F '/bin/bash' '{print $1}' | xargs)
         
-        echo -e "  [${YELLOW}${count}${NC}] 🏷️  名称: ${GREEN}${task_name}${NC}"
-        echo -e "      📁 源路径: $source_dir"
-        echo -e "      💾 备份路径: $backup_dest"
+        # 格式化解析显示排除项
+        local exclude_display="无排除项 (全盘备份)"
+        if [ -n "$exclude_raw" ]; then
+            # 清洗参数格式只保留相对路径列表
+            exclude_display=$(echo "$exclude_raw" | sed 's/--exclude=//g' | tr -d '"' | xargs | tr ' ' ',')
+        fi
+
+        echo -e "  [${YELLOW}${count}${NC}] 🏷️  任务名称: ${GREEN}${task_name}${NC}"
+        echo -e "      📁 源物理路径: $source_dir"
+        echo -e "      💾 备份物理路径: $backup_dest"
+        echo -e "      🚫 排除子项: ${RED}${exclude_display}${NC}"
         echo -e "      ⏰ 定时规则: ${cron_expr:-"未在crontab中找到"}"
         echo -e "      -----------------------------------------"
     done
@@ -133,10 +146,10 @@ add_task() {
     echo -e "${GREEN}              ✨ 创建新的备份任务 ✨             ${NC}"
     echo -e "${BLUE}=================================================${NC}"
 
-    # 源路径校验：强制要求绝对路径，并自动提取任务名
+    # 1. 源路径校验
     while true; do
-        read -p "📁 1. 请输入需要备份的【源目录或文件】绝对路径 (默认: /opt/succuba-girls-collection): " SOURCE_DIR
-        SOURCE_DIR=${SOURCE_DIR:-"/opt/succuba-girls-collection"}
+        read -p "📁 1. 请输入需要备份的【源目录或文件】绝对路径 (默认: /home/pomelo/cadence): " SOURCE_DIR
+        SOURCE_DIR=${SOURCE_DIR:-"/home/pomelo/cadence"}
 
         if [[ ! "$SOURCE_DIR" =~ ^/ ]]; then
             echo -e "${RED}❌ 必须输入绝对路径 (以 / 开头)！请勿使用 '~' 缩写。${NC}"
@@ -148,24 +161,49 @@ add_task() {
             continue
         fi
         
-        # 去除末尾斜杠，保证 basename 提取准确
+        # 去除末尾斜杠
         SOURCE_DIR=${SOURCE_DIR%/}
         break
     done
 
-    # 自动提取文件夹名作为任务名，允许中划线等字符
-    TASK_NAME=$(basename "$SOURCE_DIR")
+    # 2. 自定义任务命名/备份文件前缀
+    DEFAULT_TASK_NAME=$(basename "$SOURCE_DIR")
+    read -p "🏷️  2. 请输入任务命名 / 备份文件前缀 (默认: $DEFAULT_TASK_NAME): " TASK_NAME
+    TASK_NAME=${TASK_NAME:-"$DEFAULT_TASK_NAME"}
+    # 限制任务命名格式
+    TASK_NAME=$(echo "$TASK_NAME" | sed 's/[^a-zA-Z0-9_-]//g')
+
     WORKER_SCRIPT="$WORKER_DIR/${TASK_NAME}.sh"
     LOG_FILE="$LOG_DIR/${TASK_NAME}.log"
 
     if [ -f "$WORKER_SCRIPT" ]; then
-        echo -e "${YELLOW}⚠️ 注意：任务 '${TASK_NAME}' 已存在，继续操作将覆盖原定时任务。${NC}"
+        echo -e "${YELLOW}⚠️ 注意：任务 '${TASK_NAME}' 已存在，继续操作将覆盖原配置。${NC}"
     fi
 
-    # 目标路径校验
+    # 3. 动态配置排除路径
+    echo -e "🚫 3. 是否需要排除源目录下的特定子文件夹或文件？"
+    echo -e "   ${YELLOW}提示: 输入相对源目录的路径（如: dify 或 data/neo4j/logs），多个用英文逗号隔开。${NC}"
+    read -p "   👉 请输入排除项列表 (直接回车代表不排除): " EXCLUDE_INPUT
+
+    EXCLUDE_OPTS=""
+    if [ -n "$EXCLUDE_INPUT" ]; then
+        # 清除输入中可能夹带的任何空格
+        EXCLUDE_INPUT=$(echo "$EXCLUDE_INPUT" | tr -d ' ')
+        
+        # 解析逗号分割列表，并拼装成 tar 可识别的安全 exclude 参数
+        IFS=',' read -ra ADDR <<< "$EXCLUDE_INPUT"
+        TASK_DIR_NAME=$(basename "$SOURCE_DIR")
+        for item in "${ADDR[@]}"; do
+            # 物理双锚定：前缀匹配与纯名泛匹配，确保 100% 被 tar 排除
+            EXCLUDE_OPTS="$EXCLUDE_OPTS --exclude=\"${TASK_DIR_NAME}/${item}\" --exclude=\"${item}\""
+        done
+        echo -e "${GREEN}✅ 已为您配置排除过滤参数：${EXCLUDE_INPUT}${NC}"
+    fi
+
+    # 4. 目标路径校验
     while true; do
-        read -p "💾 2. 请输入存放备份的【目标文件夹】绝对路径 (默认: /opt/backups): " BACKUP_DEST
-        BACKUP_DEST=${BACKUP_DEST:-"/opt/backups"}
+        read -p "💾 4. 请输入存放备份的【目标文件夹】绝对路径 (默认: /home/pomelo/backups): " BACKUP_DEST
+        BACKUP_DEST=${BACKUP_DEST:-"/home/pomelo/backups"}
         
         if [[ ! "$BACKUP_DEST" =~ ^/ ]]; then
             echo -e "${RED}❌ 目标路径必须是绝对路径 (以 / 开头)！${NC}"
@@ -174,19 +212,21 @@ add_task() {
         break
     done
 
-    read -p "⏳ 3. 备份文件保留天数 (默认: 7): " RETAIN_DAYS
+    # 5. 保留天数与 Docker 状态机控制
+    read -p "⏳ 5. 备份文件保留天数 (默认: 7): " RETAIN_DAYS
     RETAIN_DAYS=${RETAIN_DAYS:-7}
 
-    read -p "🐳 4. 是否需要在备份时自动【停止并重新启动】所有 Docker 容器? (备份数据库必选) [Y/n]: " MANAGE_DOCKER
+    read -p "🐳 6. 是否需要在备份时自动【停止并重新启动】所有 Docker 容器? (备份数据库推荐选 y) [Y/n]: " MANAGE_DOCKER
     if [[ "$MANAGE_DOCKER" =~ ^[Nn]$ ]]; then
         MANAGE_DOCKER="no"
     else
         MANAGE_DOCKER="yes"
     fi
 
+    # 7. 定时运行规则
     while true; do
-        read -p "⏰ 5. 请设置备份频率 (格式 1h-24h 或 1d-28d，默认: 4h): " FREQ_INPUT
-        FREQ_INPUT=${FREQ_INPUT:-"4h"}
+        read -p "⏰ 7. 请设置备份频率 (格式 1h-24h 或 1d-28d，例如每天凌晨4点为 4h，默认: 3h 即每日凌晨3点): " FREQ_INPUT
+        FREQ_INPUT=${FREQ_INPUT:-"3h"}
 
         if [[ "$FREQ_INPUT" =~ ^([0-9]{1,2})[hH]$ ]]; then
             HOUR="${BASH_REMATCH[1]}"
@@ -212,9 +252,9 @@ add_task() {
         echo -e "${RED}❌ 输入格式无效！请输入例如 4h (每天凌晨4点) 或 15d (每月15号)。${NC}"
     done
 
-    echo -e "\n${YELLOW}⚙️ 正在生成后台工作脚本并注册定时任务...${NC}"
+    echo -e "\n${YELLOW}⚙️  正在生成后台工作脚本并注册定时任务...${NC}"
 
-    # 动态写入 Worker 脚本 (加入第五步：开放权限)
+    # 动态写入 Worker 脚本（精细化热注入）
     cat << EOF > "$WORKER_SCRIPT"
 #!/bin/bash
 # ==========================================
@@ -224,6 +264,7 @@ SOURCE_DIR="$SOURCE_DIR"
 BACKUP_DEST="$BACKUP_DEST"
 RETAIN_DAYS="$RETAIN_DAYS"
 MANAGE_DOCKER="$MANAGE_DOCKER"
+EXCLUDE_OPTS='$EXCLUDE_OPTS'
 
 DATE_SUFFIX=\$(date +"%Y-%m-%d_%H-%M-%S")
 BACKUP_FILE="\$BACKUP_DEST/${TASK_NAME}_backup_\$DATE_SUFFIX.tar.gz"
@@ -240,11 +281,14 @@ else
     echo "[\$(date +"%Y-%m-%d %H:%M:%S")] [1/5] Docker 管理已禁用，跳过停止容器..."
 fi
 
-# 第二步：压缩数据
+# 第二步：压缩数据 (🌟 精准排除功能核心)
 echo "[\$(date +"%Y-%m-%d %H:%M:%S")] [2/5] 正在压缩并备份数据..."
 mkdir -p "\$BACKUP_DEST"
-cd \$(dirname "\$SOURCE_DIR")
-tar -czf "\$BACKUP_FILE" \$(basename "\$SOURCE_DIR") > /dev/null 2>&1
+cd \$(dirname "$SOURCE_DIR")
+
+# 利用 eval 执行复杂的、带排除项的打包命令，完美保护带有空格或特殊字符的路径
+TAR_CMD="tar -czf \"\$BACKUP_FILE\" \$EXCLUDE_OPTS \"\$(basename \"\$SOURCE_DIR\")\""
+eval "\$TAR_CMD" > /dev/null 2>&1
 
 # 第三步：恢复 Docker (如果启用)
 if [ "\$MANAGE_DOCKER" = "yes" ]; then
@@ -258,7 +302,7 @@ fi
 echo "[\$(date +"%Y-%m-%d %H:%M:%S")] [4/5] 正在清理 \$RETAIN_DAYS 天前的旧备份..."
 find "\$BACKUP_DEST" -name "${TASK_NAME}_backup_*.tar.gz" -type f -mtime +\$RETAIN_DAYS -exec rm -f {} \;
 
-# 第五步：放开目标文件夹权限，允许普通用户提取
+# 第五步：放开目标文件夹权限，允许普通用户（如 NAS 同步组件）安全提取
 echo "[\$(date +"%Y-%m-%d %H:%M:%S")] [5/5] 正在开放备份目录读取权限..."
 chmod -R 755 "\$BACKUP_DEST"
 chmod 644 "\$BACKUP_FILE"
@@ -271,12 +315,15 @@ EOF
     # 赋予执行权限
     chmod +x "$WORKER_SCRIPT"
 
-    # 写入 Crontab
+    # 写入 Crontab 调度
     (crontab -l 2>/dev/null | grep -v "$WORKER_SCRIPT"; echo "$CRON_EXPR /bin/bash $WORKER_SCRIPT >> $LOG_FILE 2>&1") | crontab -
 
     echo -e "${GREEN}🎉 任务 [$TASK_NAME] 创建成功并已加入定时调度！${NC}"
     echo -e "👉 脚本路径: $WORKER_SCRIPT"
-    echo -e "👉 存放路径: $BACKUP_DEST"
+    echo -e "👉 存储路径: $BACKUP_DEST"
+    if [ -n "$EXCLUDE_INPUT" ]; then
+        echo -e "👉 排除路径: ${RED}$EXCLUDE_INPUT${NC}"
+    fi
 }
 
 # ==========================================
@@ -288,7 +335,7 @@ while true; do
     list_tasks
     
     echo -e "请选择操作菜单："
-    echo -e "  ${GREEN}1.${NC} ➕ 添加新的备份任务"
+    echo -e "  ${GREEN}1.${NC} ➕ 添加新的备份任务 (支持排除路径与自定义命名)"
     echo -e "  ${YELLOW}2.${NC} 🗑️  删除已有备份任务"
     echo -e "  ${RED}3.${NC} 🚪 退出程序"
     echo ""
