@@ -1,8 +1,8 @@
 #!/bin/bash
 # ==============================================================================
-# 脚本名称: Debian 全能初始化脚本 (生产稳定版)
-# 适用系统: Debian 11 / Debian 12 / Debian 13 (Trixie) / Ubuntu
-# 特点: 零残留、自动代理穿透、Debian 13 架构兼容、输入重定向安全防护
+# 脚本名称: Debian 全能初始化脚本 (最终纯净稳定版)
+# 适用系统: Debian 11 / 12 / 13 (Trixie) / Ubuntu (兼容普通用户 sudo 执行)
+# 设计原则: 尊重用户网络偏好、不擅改系统源、核心组件高可用
 # ==============================================================================
 
 set -u
@@ -15,20 +15,19 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 echo -e "${BLUE}=================================================${NC}"
-echo -e "${GREEN}  🚀 欢迎使用 Debian 全能初始化脚本 (稳定版) 🚀  ${NC}"
+echo -e "${GREEN}  🚀 欢迎使用 Debian 全能初始化脚本 (纯净稳定版) 🚀  ${NC}"
 echo -e "${BLUE}=================================================${NC}"
 
-# 1. 权限预检：必须拥有 root 权限
+# 1. 权限预检：必须以 root 权限运行
 if [ "$EUID" -ne 0 ]; then
     echo -e "${RED}❌ 错误: 请使用 sudo 权限运行此脚本！${NC}"
     echo -e "💡 推荐命令: sudo bash -c \"\$(curl -fsSL <URL>)\""
     exit 1
 fi
 
-# 避免 apt 弹出交互式配置弹窗
 export DEBIAN_FRONTEND=noninteractive
 
-# 2. 精准定位真实日常账户与家目录
+# 2. 定位真实的普通操作账户及家目录
 ACTUAL_USER=${SUDO_USER:-$(logname 2>/dev/null || whoami)}
 USER_HOME=$(getent passwd "$ACTUAL_USER" | cut -d: -f6)
 
@@ -37,77 +36,20 @@ if [ -z "$USER_HOME" ] || [ ! -d "$USER_HOME" ]; then
 fi
 
 # ==============================================================================
-# 🚀 代理智能捕获与全局临时穿透引擎
+# 🌐 网络与代理状态检查 (完全遵循用户意愿，不擅自开启与劫持)
 # ==============================================================================
-DETECTED_PROXY=""
+# 自动清理历史脚本可能残留的 APT 临时代理，防止导致 503 报错
+rm -f /etc/apt/apt.conf.d/99temp-proxy 2>/dev/null || true
 
-# A. 优先捕获父环境中的代理变量 (如果使用了 sudo -E)
-if [ -n "${http_proxy:-}" ]; then
-    DETECTED_PROXY="$http_proxy"
-elif [ -n "${HTTP_PROXY:-}" ]; then
-    DETECTED_PROXY="$HTTP_PROXY"
-fi
-
-# B. 如果当前为空，深度解析调用者账户已有的 bashrc/zshrc (捕获之前配置过的 proxy alias)
-if [ -z "$DETECTED_PROXY" ] && [ "$ACTUAL_USER" != "root" ]; then
-    for rc_file in "$USER_HOME/.bashrc" "$USER_HOME/.zshrc"; do
-        if [ -f "$rc_file" ]; then
-            PARSED_PROXY=$(grep -oE "http_proxy=['\"][^'\"]+['\"]" "$rc_file" 2>/dev/null | head -n 1 | cut -d"'" -f2 | cut -d'"' -f2)
-            if [ -n "$PARSED_PROXY" ]; then
-                DETECTED_PROXY="$PARSED_PROXY"
-                break
-            fi
-            PARSED_PROXY=$(grep -oE "[0-9]{1,3}(\.[0-9]{1,3}){3}:[0-9]+" "$rc_file" 2>/dev/null | head -n 1)
-            if [ -n "$PARSED_PROXY" ]; then
-                DETECTED_PROXY="http://$PARSED_PROXY"
-                break
-            fi
-        fi
-    done
-fi
-
-# C. 注入临时全局代理通道
-if [ -n "$DETECTED_PROXY" ]; then
-    DETECTED_PROXY=$(echo "$DETECTED_PROXY" | tr -d '\r\n ' | sed 's/[^a-zA-Z0-9.:/_-]//g')
-    
-    export http_proxy="$DETECTED_PROXY"
-    export https_proxy="$DETECTED_PROXY"
-    export all_proxy="$DETECTED_PROXY"
-    export HTTP_PROXY="$DETECTED_PROXY"
-    export HTTPS_PROXY="$DETECTED_PROXY"
-    export ALL_PROXY="$DETECTED_PROXY"
-
-    echo -e "${GREEN}✨ [检测成功] 已自动穿透并挂载内网代理: $DETECTED_PROXY${NC}"
-
-    # 临时注入 APT
-    echo "Acquire::http::Proxy \"$DETECTED_PROXY\";" > /etc/apt/apt.conf.d/99temp-proxy
-    echo "Acquire::https::Proxy \"$DETECTED_PROXY\";" >> /etc/apt/apt.conf.d/99temp-proxy
-    
-    # 临时注入 cURL
-    echo "proxy = \"$DETECTED_PROXY\"" > /root/.curlrc
-    echo "proxy = \"$DETECTED_PROXY\"" > "$USER_HOME/.curlrc"
-    chown "$ACTUAL_USER":"$ACTUAL_USER" "$USER_HOME/.curlrc" 2>/dev/null || true
-
-    # 临时注入 Git
-    git config --global http.proxy "$DETECTED_PROXY" 2>/dev/null || true
-    git config --global https.proxy "$DETECTED_PROXY" 2>/dev/null || true
+ACTIVE_PROXY="${http_proxy:-${HTTP_PROXY:-}}"
+if [ -n "$ACTIVE_PROXY" ]; then
+    echo -e "${GREEN}✨ 检测到当前终端已由用户主动挂载代理: $ACTIVE_PROXY${NC}"
 else
-    echo -e "${YELLOW}ℹ️ 未检测到活动的代理配置，将使用原生直连网络。${NC}"
+    echo -e "${GREEN}🌐 当前终端未挂载代理，全程使用系统原生直接连接。${NC}"
 fi
 
-# D. 退出清理钩子：脚本结束或中断时，秒级物理擦除临时网络配置
-cleanup_temp_proxy() {
-    echo -e "\n${YELLOW}🧹 正在物理恢复系统原生网络环境，清理临时凭据...${NC}"
-    rm -f /etc/apt/apt.conf.d/99temp-proxy
-    rm -f /root/.curlrc
-    rm -f "$USER_HOME/.curlrc"
-    git config --global --unset http.proxy 2>/dev/null || true
-    git config --global --unset https.proxy 2>/dev/null || true
-}
-trap cleanup_temp_proxy EXIT INT TERM
-
 # ==============================================================================
-# 0. 基础包更新保障
+# 0. 基础环境保底
 # ==============================================================================
 apt-get update -q && apt-get install -y -q sudo
 
@@ -117,37 +59,35 @@ apt-get update -q && apt-get install -y -q sudo
 echo -e "\n${YELLOW}🔐 [1/12] 账户与安全设置${NC}"
 
 if [ "$ACTUAL_USER" = "root" ]; then
-    echo -e "${YELLOW}⚠️ 检测到您当前直接以 root 账户执行！${NC}"
-    read -p "❓ 是否新建一个日常普通账户 (自动加入 sudo 组)？[Y/n]: " create_new_user </dev/tty
+    echo -e "${YELLOW}⚠️ 检测到您当前正以 root 账户直接执行！${NC}"
+    read -p "❓ 是否新建一个日常普通账户 (加入 sudo 组)？[Y/n]: " create_new_user </dev/tty
     if [[ ! "$create_new_user" =~ ^[Nn]$ ]]; then
-        read -p "👤 请输入新用户的用户名: " new_username </dev/tty
+        read -p "👤 请输入新用户名: " new_username </dev/tty
         if [ -n "$new_username" ] && ! id "$new_username" &>/dev/null; then
-            echo -e "${YELLOW}🔑 正在创建用户 $new_username，请按提示为其设置密码：${NC}"
             adduser --gecos "" "$new_username"
             usermod -aG sudo "$new_username"
-            
             ACTUAL_USER="$new_username"
             USER_HOME=$(getent passwd "$ACTUAL_USER" | cut -d: -f6)
-            echo -e "${GREEN}✅ 用户 $new_username 创建完毕并已授权 sudo。${NC}"
+            echo -e "${GREEN}✅ 用户 $new_username 创建完毕，已授予 sudo 权限。${NC}"
         fi
     fi
 else
-    echo -e "${GREEN}✅ 当前操作者为普通账户 ($ACTUAL_USER)，配置将针对其家目录执行。${NC}"
+    echo -e "${GREEN}✅ 当前操作者为日常账户 ($ACTUAL_USER)，所有个性化配置将写入其主目录。${NC}"
 fi
 
-echo -e "👤 目标生效用户: ${GREEN}$ACTUAL_USER${NC} | 目标家目录: ${GREEN}$USER_HOME${NC}"
+echo -e "👤 目标生效用户: ${GREEN}$ACTUAL_USER${NC} | 家目录: ${GREEN}$USER_HOME${NC}"
 cd "$USER_HOME" || cd /tmp
 
-# 确保配置文件存在
+# 确保目标用户的核心配置文件存在
 sudo -u "$ACTUAL_USER" -H touch "$USER_HOME/.zshrc" "$USER_HOME/.bashrc"
 
-# 1.5 交互式配置 SSH 公钥
+# 1.5 配置 SSH 密钥登录
 if [ -s "$USER_HOME/.ssh/authorized_keys" ]; then
-    echo -e "${GREEN}✅ 账户 $ACTUAL_USER 已配置 SSH 公钥，跳过配置。${NC}"
+    echo -e "${GREEN}✅ 账户 $ACTUAL_USER 已存在配置好的 SSH 公钥，跳过。${NC}"
 else
-    read -p "❓ 是否为账户 [$ACTUAL_USER] 配置 SSH 公钥登录？[Y/n]: " setup_ssh_key </dev/tty
+    read -p "❓ 是否为账户 [$ACTUAL_USER] 配置 SSH 公钥？[Y/n]: " setup_ssh_key </dev/tty
     if [[ ! "$setup_ssh_key" =~ ^[Nn]$ ]]; then
-        read -r -p "📝 请在此处粘贴您的 SSH 公钥: " ssh_pub_key </dev/tty
+        read -r -p "📝 请粘贴您的 SSH 公钥: " ssh_pub_key </dev/tty
         if [ -n "$ssh_pub_key" ]; then
             mkdir -p "$USER_HOME/.ssh"
             echo "$ssh_pub_key" >> "$USER_HOME/.ssh/authorized_keys"
@@ -159,9 +99,9 @@ else
     fi
 fi
 
-# 1.6 禁用 Root 远程登录 (兼容 Debian 12/13 与 sshd_config.d)
+# 1.6 禁用 Root 远程密码登录 (安全防爆破，兼顾 Debian 12/13)
 if [ "$ACTUAL_USER" != "root" ]; then
-    read -p "❓ 是否禁用 Root 远程 SSH 登录？(家庭服务器可选) [y/N]: " disable_root </dev/tty
+    read -p "❓ 是否禁用 Root 远程 SSH 登录？(家庭内网服务器推荐保持 n) [y/N]: " disable_root </dev/tty
     if [[ "$disable_root" =~ ^[Yy]$ ]]; then
         if [ -d "/etc/ssh/sshd_config.d" ]; then
             echo "PermitRootLogin no" > /etc/ssh/sshd_config.d/99-disable-root.conf
@@ -174,7 +114,7 @@ if [ "$ACTUAL_USER" != "root" ]; then
             systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
             echo -e "${GREEN}🛡️ Root 远程登录已安全封禁。${NC}"
         else
-            echo -e "${RED}⚠️ SSH 配置检测失败！已自动回滚，未做更改。${NC}"
+            echo -e "${RED}⚠️ SSH 配置检测失败！已自动回滚，未禁用 Root。${NC}"
             rm -f /etc/ssh/sshd_config.d/99-disable-root.conf 2>/dev/null
         fi
     else
@@ -183,32 +123,31 @@ if [ "$ACTUAL_USER" != "root" ]; then
 fi
 
 # ==============================================================================
-# 2. 核心必备运维工具 (已彻底剔除无效依赖)
+# 2. 核心必备运维工具 (剔除无关包，纯净必装)
 # ==============================================================================
-echo -e "\n${YELLOW}📦 [2/12] 正在更新系统并安装核心必备工具...${NC}"
+echo -e "\n${YELLOW}📦 [2/12] 正在更新系统并安装核心运维工具...${NC}"
 apt-get upgrade -y -q
-# 仅保留纯净、核心的工具，绝不因多余包名阻断流程
 apt-get install -y -q curl wget git nano htop zsh unzip tmux jq ca-certificates
 
 # ==============================================================================
-# 3. TCP BBR 加速 (完美适配 Debian 12/13 sysctl.d 模块化机制)
+# 3. 网络优化 (TCP BBR 加速)
 # ==============================================================================
-echo -e "\n${YELLOW}🌐 [3/12] 网络拥塞控制 (TCP BBR 加速)${NC}"
+echo -e "\n${YELLOW}🌐 [3/12] TCP BBR 拥塞控制优化${NC}"
 if grep -qEi "(Microsoft|WSL)" /proc/version 2>/dev/null; then
-    echo -e "${GREEN}💻 检测到 WSL 环境，自动跳过 BBR 配置。${NC}"
+    echo -e "${GREEN}💻 WSL 环境，自动跳过 BBR 设置。${NC}"
 elif sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -q "bbr"; then
-    echo -e "${GREEN}✅ BBR 拥塞控制已经生效，跳过配置。${NC}"
+    echo -e "${GREEN}✅ BBR 加速已经在运行中，跳过。${NC}"
 else
-    read -p "❓ 是否开启 BBR 加速？(家庭 Wi-Fi 及远程访问抗丢包神器) [Y/n]: " enable_bbr </dev/tty
+    read -p "❓ 是否开启 BBR 加速？(家庭无线连接抗抖动利器) [Y/n]: " enable_bbr </dev/tty
     if [[ ! "$enable_bbr" =~ ^[Nn]$ ]]; then
         mkdir -p /etc/sysctl.d
         cat << 'EOF' > /etc/sysctl.d/99-bbr.conf
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 EOF
-        # 兼容性重载配置
+        # 兼容性重载配置 (彻底解决 Debian 13 can't read /etc/sysctl.conf 报错)
         sysctl --system >/dev/null 2>&1 || sysctl -p /etc/sysctl.d/99-bbr.conf 2>/dev/null || true
-        echo -e "${GREEN}✅ BBR 加速配置完毕并已成功生效！${NC}"
+        echo -e "${GREEN}✅ BBR 加速模块配置完毕并已生效！${NC}"
     fi
 fi
 
@@ -218,9 +157,9 @@ fi
 echo -e "\n${YELLOW}⏰ [4/12] 系统时区校验${NC}"
 CURRENT_TZ=$(timedatectl show --property=Timezone --value 2>/dev/null || echo "")
 if [ "$CURRENT_TZ" = "Asia/Shanghai" ]; then
-    echo -e "${GREEN}✅ 系统时区已经是 Asia/Shanghai，跳过。${NC}"
+    echo -e "${GREEN}✅ 当前时区已是 Asia/Shanghai，跳过。${NC}"
 else
-    read -p "❓ 是否将系统时区修改为 Asia/Shanghai (北京时间)？[Y/n]: " set_tz </dev/tty
+    read -p "❓ 是否将时区设置为 Asia/Shanghai (北京时间)？[Y/n]: " set_tz </dev/tty
     if [[ ! "$set_tz" =~ ^[Nn]$ ]]; then
         timedatectl set-timezone Asia/Shanghai 2>/dev/null || true
         echo -e "${GREEN}✅ 系统时区已调整为: $(date)${NC}"
@@ -228,13 +167,13 @@ else
 fi
 
 # ==============================================================================
-# 5. 防火墙与防爆破 (UFW & Fail2ban)
+# 5. 防火墙与安全配置
 # ==============================================================================
 echo -e "\n${YELLOW}🛡️ [5/12] 防火墙配置 (UFW & Fail2ban)${NC}"
 if grep -qEi "(Microsoft|WSL)" /proc/version 2>/dev/null; then
     echo -e "${GREEN}💻 WSL 环境，自动跳过防火墙配置。${NC}"
 else
-    read -p "❓ 是否配置 UFW 防火墙与 Fail2ban？(家庭局域网服务器推荐跳过) [y/N]: " config_sec </dev/tty
+    read -p "❓ 是否配置防火墙与 Fail2ban？(家庭局域网服务器强烈建议选 n 跳过) [y/N]: " config_sec </dev/tty
     if [[ "$config_sec" =~ ^[Yy]$ ]]; then
         apt-get install -y -q ufw fail2ban
         systemctl enable fail2ban --now >/dev/null 2>&1
@@ -246,7 +185,7 @@ else
         ufw allow 80/tcp >/dev/null 2>&1
 
         while true; do
-            read -p "❓ 需要开放其他端口吗？(逗号分隔如 8080,9000，按 n 或回车跳过): " extra_ports </dev/tty
+            read -p "❓ 是否放行其他端口？(逗号隔开如 8080,9000，回车或按 n 跳过): " extra_ports </dev/tty
             if [[ "$extra_ports" =~ ^[Nn]$ ]] || [ -z "$extra_ports" ]; then
                 break
             fi
@@ -254,7 +193,7 @@ else
                 IFS=',' read -ra PORT_ARRAY <<< "$extra_ports"
                 for port in "${PORT_ARRAY[@]}"; do
                     ufw allow "$port/tcp" >/dev/null 2>&1
-                    echo -e "${GREEN}✅ 已放行端口: $port/tcp${NC}"
+                    echo -e "${GREEN}✅ 已放行: $port/tcp${NC}"
                 done
                 break
             else
@@ -263,24 +202,24 @@ else
         done
 
         ufw --force enable >/dev/null 2>&1
-        echo -e "${GREEN}✅ UFW 防火墙已成功激活并开机自启。${NC}"
+        echo -e "${GREEN}✅ UFW 防火墙已激活。${NC}"
     else
         echo -e "${YELLOW}⏭️ 已跳过防火墙配置。${NC}"
     fi
 fi
 
 # ==============================================================================
-# 6. Swap 虚拟内存 (智能容错机制)
+# 6. Swap 虚拟内存管理
 # ==============================================================================
 echo -e "\n${YELLOW}💾 [6/12] 虚拟内存管理 (Swap)${NC}"
 SWAP_TOTAL=$(free -m | awk '/Swap:/ {print $2}')
 if [ -n "$SWAP_TOTAL" ] && [ "$SWAP_TOTAL" -gt 0 ]; then
-    echo -e "${GREEN}✅ 系统已存在 Swap (${SWAP_TOTAL}MB)，无需配置。${NC}"
+    echo -e "${GREEN}✅ 系统已存在 Swap (${SWAP_TOTAL}MB)，无需重复创建。${NC}"
 else
-    read -p "❓ 是否创建 2GB Swap 虚拟内存？[Y/n]: " create_swap </dev/tty
+    read -p "❓ 是否创建 2GB Swap 虚拟内存 (防内存耗尽死机)？[Y/n]: " create_swap </dev/tty
     if [[ ! "$create_swap" =~ ^[Nn]$ ]]; then
         if [ ! -f /swapfile ]; then
-            echo -e "${YELLOW}📦 正在分配 2GB Swap 虚拟内存...${NC}"
+            echo -e "${YELLOW}📦 正在分配 2GB Swap 空间...${NC}"
             fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
             chmod 600 /swapfile
             mkswap /swapfile >/dev/null
@@ -288,67 +227,76 @@ else
             if ! grep -q '/swapfile' /etc/fstab; then
                 echo '/swapfile none swap sw 0 0' >> /etc/fstab
             fi
-            echo -e "${GREEN}✅ 2GB Swap 已成功挂载并写入引导表！${NC}"
+            echo -e "${GREEN}✅ 2GB Swap 已成功挂载并写入开机引导！${NC}"
         fi
     fi
 fi
 
 # ==============================================================================
-# 7. 容器环境 (Docker Engine - 修复假成功与超时重试)
+# 7. Docker 引擎安装 (多通道可选，彻底杜绝假成功与网络超时)
 # ==============================================================================
 echo -e "\n${YELLOW}🐳 [7/12] 容器引擎 (Docker)${NC}"
 if command -v docker &> /dev/null; then
     echo -e "${GREEN}✅ Docker 官方引擎已安装，跳过。${NC}"
 else
-    read -p "❓ 是否安装 Docker 官方容器引擎？[Y/n]: " install_docker </dev/tty
-    if [[ ! "$install_docker" =~ ^[Nn]$ ]]; then
-        echo -e "${YELLOW}📡 正在拉取 Docker 安装脚本...${NC}"
+    echo -e "请选择适合您当前网络环境的 Docker 安装通道:"
+    echo -e "  [1] 阿里云镜像源通道 (${GREEN}免代理/国内直连推荐${NC}，速度快极稳)"
+    echo -e "  [2] Docker 官方原生通道 (需服务器能通畅直连外网或已开代理)"
+    echo -e "  [3] 跳过 Docker 安装"
+    read -p "❓ 请选择 [1/2/3] (默认 1): " docker_choice </dev/tty
+    docker_choice=${docker_choice:-1}
+
+    INSTALL_SUCCESS=false
+
+    if [ "$docker_choice" = "1" ]; then
+        echo -e "${YELLOW}📡 正在通过阿里云高速镜像源部署 Docker...${NC}"
+        curl -fsSL https://get.docker.com | bash -s docker --mirror Aliyun
+    elif [ "$docker_choice" = "2" ]; then
+        echo -e "${YELLOW}📡 正在通过 Docker 官方原生通道拉取并安装...${NC}"
+        curl -fsSL --connect-timeout 15 https://get.docker.com -o /tmp/get-docker.sh 2>/dev/null || true
         
-        # 尝试官方源下载
-        curl -fsSL --connect-timeout 10 https://get.docker.com -o /tmp/get-docker.sh 2>/dev/null || true
-        
-        # 严格检查：文件必须存在且体积大于 0（杜绝 0 字节假成功）
+        # 严格非空校验
         if [ -s /tmp/get-docker.sh ]; then
             sh /tmp/get-docker.sh
             rm -f /tmp/get-docker.sh
         else
-            echo -e "${YELLOW}⚠️ 官方直连由于网络原因超时，自动切换至阿里云国内镜像通道...${NC}"
-            curl -fsSL --connect-timeout 10 https://get.docker.com | bash -s docker --mirror Aliyun
+            echo -e "${RED}❌ 官方安装脚本下载失败，可能受外网连接限制。${NC}"
         fi
-        
-        # 核心防伪：二次验证命令实体是否存在
-        if ! command -v docker &> /dev/null; then
-            echo -e "${RED}❌ Docker 安装未能成功！${NC}"
-            echo -e "${YELLOW}💡 原因排查: 国内网络直连 Docker 源超时。建议脚本跑完后，先执行 proxy 打开代理，再手动运行: curl -fsSL https://get.docker.com | bash${NC}"
-        else
+    else
+        echo -e "${YELLOW}⏭️ 已跳过 Docker 安装。${NC}"
+    fi
+
+    # 二次验证安装结果
+    if [ "$docker_choice" = "1" ] || [ "$docker_choice" = "2" ]; then
+        if command -v docker &> /dev/null; then
             groupadd docker 2>/dev/null || true
             usermod -aG docker "$ACTUAL_USER"
             systemctl enable docker --now 2>/dev/null || true
-            echo -e "${GREEN}✅ Docker 官方引擎安装完成！已将用户 $ACTUAL_USER 纳入授权组。${NC}"
-            echo -e "${YELLOW}💡 提示: 权限将在下次登录或执行 newgrp docker 后即刻生效。${NC}"
+            echo -e "${GREEN}✅ Docker 引擎安装成功！已授权用户 $ACTUAL_USER。${NC}"
+            echo -e "${YELLOW}💡 提示: 免 sudo 权限将在重新登录或执行 newgrp docker 后生效。${NC}"
+        else
+            echo -e "${RED}❌ Docker 未能成功安装，请检查网络后稍后手动安装。${NC}"
         fi
     fi
 fi
 
 # ==============================================================================
-# 8. 终端环境美化 (Zsh + Oh-My-Zsh)
+# 8. 终端体验美化 (Zsh + Oh-My-Zsh)
 # ==============================================================================
 echo -e "\n${YELLOW}✨ [8/12] 终端体验美化 (Zsh + 插件)${NC}"
 if [ -d "$USER_HOME/.oh-my-zsh" ]; then
     echo -e "${GREEN}✅ Oh-My-Zsh 环境已存在，跳过。${NC}"
 else
-    read -p "❓ 是否为 [$ACTUAL_USER] 部署现代化 Zsh 终端体验？[Y/n]: " config_zsh </dev/tty
+    read -p "❓ 是否为 [$ACTUAL_USER] 安装 Oh-My-Zsh 终端环境？[Y/n]: " config_zsh </dev/tty
     if [[ ! "$config_zsh" =~ ^[Nn]$ ]]; then
         chsh -s "$(which zsh)" "$ACTUAL_USER" 2>/dev/null || true
 
-        # 部署 Oh-My-Zsh
         sudo -u "$ACTUAL_USER" -H bash -c "
             if [ ! -d \"$USER_HOME/.oh-my-zsh\" ]; then
                 RUNZSH=no sh -c \"\$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)\" \"\" --unattended
             fi
         "
-        
-        # 安装自动补全与高亮插件
+
         ZSH_CUSTOM="$USER_HOME/.oh-my-zsh/custom"
         sudo -u "$ACTUAL_USER" -H bash -c "
             git clone https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM}/plugins/zsh-autosuggestions 2>/dev/null || true
@@ -357,14 +305,14 @@ else
                 sed -i 's/plugins=(git)/plugins=(git zsh-autosuggestions zsh-syntax-highlighting)/g' \"$USER_HOME/.zshrc\"
             fi
         "
-        echo -e "${GREEN}✅ Zsh 终端及自动补全插件安装完毕。${NC}"
+        echo -e "${GREEN}✅ Zsh 终端及自动补全、高亮插件安装完成。${NC}"
     fi
 fi
 
 # ==============================================================================
 # 9. 前端开发环境 (默认跳过)
 # ==============================================================================
-echo -e "\n${YELLOW}🟩 [9/12] 前端运行时环境 (Node.js/pnpm)${NC}"
+echo -e "\n${YELLOW}🟩 [9/12] 前端开发环境 (Node.js/pnpm)${NC}"
 read -p "❓ 是否安装 Node.js LTS 与 pnpm？[y/N]: " install_node </dev/tty
 if [[ "$install_node" =~ ^[Yy]$ ]]; then
     sudo -u "$ACTUAL_USER" -H bash -c '
@@ -375,13 +323,13 @@ if [[ "$install_node" =~ ^[Yy]$ ]]; then
         nvm use --lts
         npm install -g pnpm
     '
-    echo -e "${GREEN}✅ Node.js 及 pnpm 部署成功。${NC}"
+    echo -e "${GREEN}✅ Node.js 与 pnpm 安装完毕。${NC}"
 else
     echo -e "${YELLOW}⏭️ 已跳过前端环境配置。${NC}"
 fi
 
 # ==============================================================================
-# 10. 后端开发环境 (默认跳过)
+# 10. Python 开发环境 (默认跳过)
 # ==============================================================================
 echo -e "\n${YELLOW}🐍 [10/12] 后端开发环境 (Python / uv)${NC}"
 read -p "❓ 是否安装 Python uv 开发环境？[y/N]: " install_py </dev/tty
@@ -392,66 +340,58 @@ if [[ "$install_py" =~ ^[Yy]$ ]]; then
         ln -sf "$USER_HOME/.local/bin/uvx" /usr/local/bin/uvx
     fi
     sudo -u "$ACTUAL_USER" -H /usr/local/bin/uv python install 3.12
-    echo -e "${GREEN}✅ Python uv 环境就绪。${NC}"
+    echo -e "${GREEN}✅ uv 及 Python 3.12 准备就绪。${NC}"
 else
     echo -e "${YELLOW}⏭️ 已跳过 Python 环境配置。${NC}"
 fi
 
 # ==============================================================================
-# 11. 快捷网络开关 (proxy / unproxy)
+# 11. 终端快捷网络开关 (proxy / unproxy)
 # ==============================================================================
-echo -e "\n${YELLOW}🔌 [11/12] 终端快捷网络开关注入${NC}"
-read -p "❓ 是否配置终端 proxy/unproxy 快捷开关？[Y/n]: " setup_proxy </dev/tty
+echo -e "\n${YELLOW}🔌 [11/12] 终端代理快捷命令配置${NC}"
+read -p "❓ 是否配置终端 proxy/unproxy 快捷别名？[Y/n]: " setup_proxy </dev/tty
 if [[ ! "$setup_proxy" =~ ^[Nn]$ ]]; then
-    # 优先展示当前探测到的代理地址作为默认推荐
-    DEFAULT_PROXY=${DETECTED_PROXY:-"http://192.168.31.227:20172"}
-    read -p "🔗 请输入代理地址 (默认: $DEFAULT_PROXY): " proxy_url </dev/tty
-    proxy_url=${proxy_url:-"$DEFAULT_PROXY"}
-    
-    proxy_url=$(echo "$proxy_url" | tr -d '\r\n ' | sed 's/[^a-zA-Z0-9.:/_-]//g')
-    
-    PROXY_SNIPPET="
+    read -p "🔗 请输入代理连接地址 (例如 http://192.168.31.227:20172): " proxy_url </dev/tty
+    if [ -n "$proxy_url" ]; then
+        proxy_url=$(echo "$proxy_url" | tr -d '\r\n ' | sed 's/[^a-zA-Z0-9.:/_-]//g')
+        
+        PROXY_SNIPPET="
 # --- Quick Proxy Switch ---
 alias proxy=\"export http_proxy='$proxy_url' https_proxy='$proxy_url' all_proxy='$proxy_url' && echo '🟢 代理已开启 ($proxy_url)'\"
 alias unproxy=\"unset http_proxy https_proxy all_proxy && echo '🟡 代理已关闭'\""
 
-    for file in "$USER_HOME/.bashrc" "$USER_HOME/.zshrc"; do
-        if [ -f "$file" ]; then
-            # 先清理旧的 proxy alias，避免重复堆叠
-            sed -i '/Quick Proxy Switch/,+2d' "$file"
-            echo "$PROXY_SNIPPET" >> "$file"
-        fi
-    done
-    echo -e "${GREEN}✅ 代理快捷指令 (proxy / unproxy) 已绑定完成！${NC}"
+        for file in "$USER_HOME/.bashrc" "$USER_HOME/.zshrc"; do
+            if [ -f "$file" ]; then
+                sed -i '/Quick Proxy Switch/,+2d' "$file"
+                echo "$PROXY_SNIPPET" >> "$file"
+            fi
+        done
+        echo -e "${GREEN}✅ 别名配置完成！以后输入 proxy 即可开代理，输入 unproxy 即可关代理。${NC}"
+    fi
 fi
 
 # ==============================================================================
-# 12. 系统垃圾清理 (保护 Flash 闪存，仅清理陈旧临时文件)
+# 12. 系统垃圾清理 (仅清理陈旧孤立缓存，保护存储介质)
 # ==============================================================================
-echo -e "\n${YELLOW}🧹 [12/12] 深度系统瘦身与缓存清理...${NC}"
+echo -e "\n${YELLOW}🧹 [12/12] 系统环境清理与瘦身...${NC}"
 apt-get autoremove -y --purge >/dev/null 2>&1
 apt-get autoclean -y >/dev/null 2>&1
 apt-get clean -y >/dev/null 2>&1
 journalctl --vacuum-size=50M >/dev/null 2>&1
 
-# 安全清理旧日志
-find /var/log -type f -regex '.*\.gz$' -delete >/dev/null 2>&1
-find /var/log -type f -regex '.*\.[0-9]$' -delete >/dev/null 2>&1
-
-# 安全清理超过 1 天的孤立临时文件 (绝不破坏活跃的 socket 与 PID 句柄)
+# 仅清理超过 1 天的旧临时文件，绝不误删运行中的进程通信 socket
 find /tmp -mindepth 1 -maxdepth 2 -mtime +1 -delete 2>/dev/null || true
 find /var/tmp -mindepth 1 -maxdepth 2 -mtime +1 -delete 2>/dev/null || true
 systemd-tmpfiles --clean 2>/dev/null || true
 
-# 清理缓存
 rm -rf "$USER_HOME/.cache" /root/.cache >/dev/null 2>&1
-echo -e "${GREEN}✅ 磁盘清理完成，系统已处于最轻盈状态。${NC}"
+echo -e "${GREEN}✅ 系统清理完毕。${NC}"
 
 # ==============================================================================
-# 结束引导
+# 结束提示
 # ==============================================================================
 echo -e "\n${BLUE}=================================================${NC}"
-echo -e "${GREEN}🎉 Debian 初始化流程全部圆满结束！🎉${NC}"
-echo -e "${YELLOW}👉 请断开当前连接并使用【 $ACTUAL_USER 】账户重新登录！${NC}"
-echo -e "${YELLOW}👉 如果配置了 Docker，重新登录后即可直接运行 docker ps 免 sudo 验证。${NC}"
+echo -e "${GREEN}🎉 Debian 初始化流程全部顺利完成！🎉${NC}"
+echo -e "${YELLOW}👉 请注销或断开当前终端，使用【 $ACTUAL_USER 】重新连接。${NC}"
+echo -e "${YELLOW}👉 重新登录后，可直接输入 docker ps 测试免 sudo 权限。${NC}"
 echo -e "${BLUE}=================================================${NC}"
