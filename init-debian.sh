@@ -233,50 +233,38 @@ else
 fi
 
 # ==============================================================================
-# 7. Docker 引擎安装 (多通道可选，彻底杜绝假成功与网络超时)
+# 7. Docker 引擎安装 (纯净官方原生通道 + 网络抖动自动重试)
 # ==============================================================================
 echo -e "\n${YELLOW}🐳 [7/12] 容器引擎 (Docker)${NC}"
 if command -v docker &> /dev/null; then
     echo -e "${GREEN}✅ Docker 官方引擎已安装，跳过。${NC}"
 else
-    echo -e "请选择适合您当前网络环境的 Docker 安装通道:"
-    echo -e "  [1] 阿里云镜像源通道 (${GREEN}免代理/国内直连推荐${NC}，速度快极稳)"
-    echo -e "  [2] Docker 官方原生通道 (需服务器能通畅直连外网或已开代理)"
-    echo -e "  [3] 跳过 Docker 安装"
-    read -p "❓ 请选择 [1/2/3] (默认 1): " docker_choice </dev/tty
-    docker_choice=${docker_choice:-1}
-
-    INSTALL_SUCCESS=false
-
-    if [ "$docker_choice" = "1" ]; then
-        echo -e "${YELLOW}📡 正在通过阿里云高速镜像源部署 Docker...${NC}"
-        curl -fsSL https://get.docker.com | bash -s docker --mirror Aliyun
-    elif [ "$docker_choice" = "2" ]; then
-        echo -e "${YELLOW}📡 正在通过 Docker 官方原生通道拉取并安装...${NC}"
-        curl -fsSL --connect-timeout 15 https://get.docker.com -o /tmp/get-docker.sh 2>/dev/null || true
+    read -p "❓ 是否安装 Docker 官方容器引擎？[Y/n]: " install_docker </dev/tty
+    if [[ ! "$install_docker" =~ ^[Nn]$ ]]; then
+        echo -e "${YELLOW}📡 正在从 Docker 官方拉取最新部署脚本...${NC}"
         
-        # 严格非空校验
+        # 使用 --retry 2 应对偶发性握手阻断，--connect-timeout 限制超时
+        curl -fsSL --retry 2 --retry-delay 2 --connect-timeout 10 https://get.docker.com -o /tmp/get-docker.sh 2>/dev/null || true
+        
+        # 严格非空检查
         if [ -s /tmp/get-docker.sh ]; then
             sh /tmp/get-docker.sh
             rm -f /tmp/get-docker.sh
         else
-            echo -e "${RED}❌ 官方安装脚本下载失败，可能受外网连接限制。${NC}"
+            echo -e "${RED}❌ Docker 官方脚本下载失败！${NC}"
+            echo -e "${YELLOW}💡 提示: 若外网偶发断流，请先退出执行 proxy 打开代理，再重新执行安装。${NC}"
         fi
-    else
-        echo -e "${YELLOW}⏭️ 已跳过 Docker 安装。${NC}"
-    fi
 
-    # 二次验证安装结果
-    if [ "$docker_choice" = "1" ] || [ "$docker_choice" = "2" ]; then
+        # 校验安装成果并授权
         if command -v docker &> /dev/null; then
             groupadd docker 2>/dev/null || true
             usermod -aG docker "$ACTUAL_USER"
             systemctl enable docker --now 2>/dev/null || true
-            echo -e "${GREEN}✅ Docker 引擎安装成功！已授权用户 $ACTUAL_USER。${NC}"
-            echo -e "${YELLOW}💡 提示: 免 sudo 权限将在重新登录或执行 newgrp docker 后生效。${NC}"
-        else
-            echo -e "${RED}❌ Docker 未能成功安装，请检查网络后稍后手动安装。${NC}"
+            echo -e "${GREEN}✅ Docker 官方引擎安装完成！已将用户 $ACTUAL_USER 加入授权组。${NC}"
+            echo -e "${YELLOW}💡 提示: 免 sudo 权限将在下次登录或执行 newgrp docker 后生效。${NC}"
         fi
+    else
+        echo -e "${YELLOW}⏭️ 已跳过 Docker 安装。${NC}"
     fi
 fi
 
